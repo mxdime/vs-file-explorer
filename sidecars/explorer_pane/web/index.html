@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VS File Explorer</title>
+  <link rel="icon" type="image/svg+xml" href="./logo.svg">
+  <script src="./preload.js"></script>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app" class="workbench" data-testid="workbench">
+    <!-- Top Header: Workspace Switcher & Workbench Tabs -->
+    <header class="wb-header">
+      <div class="ws-bar">
+        <button
+          id="ws-switcher-btn"
+          type="button"
+          class="ws-switcher-btn"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+          title="Trocar pasta do projeto"
+          data-testid="ws-switcher-btn"
+        >
+          <span class="ws-icon" aria-hidden="true">
+            <svg class="ws-brand-svg" viewBox="0 0 24 24" fill="none">
+              <path d="M2.5 5.5A1.8 1.8 0 0 1 4.3 3.7h4.9l1.8 2h8.7a1.8 1.8 0 0 1 1.8 1.8v10.7a1.8 1.8 0 0 1-1.8 1.8H4.3a1.8 1.8 0 0 1-1.8-1.8V5.5Z" fill="#007ACC"/>
+              <path d="M2.5 8.5h19v9.7a1.8 1.8 0 0 1-1.8 1.8H4.3a1.8 1.8 0 0 1-1.8-1.8V8.5Z" fill="#22A7F0"/>
+              <rect x="6.5" y="10.8" width="6.2" height="6.8" rx="1.1" fill="#F59E0B"/>
+              <path d="M14.2 12.2h4.4M14.2 14.6h3.2" stroke="#10B981" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <span class="ws-labels">
+            <span id="ws-name" class="ws-name">Carregando workspace...</span>
+            <span id="ws-path" class="ws-path"></span>
+          </span>
+          <span id="ws-source-badge" class="ws-badge hidden"></span>
+          <svg class="icon ws-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6 3.5 4 3.5-4"/></svg>
+        </button>
+
+        <div class="ws-actions">
+          <button
+            id="btn-ext-settings"
+            type="button"
+            class="btn btn-ghost btn-sm settings-btn"
+            title="Configurações"
+            aria-label="Configurações"
+            data-testid="btn-ext-settings"
+          >
+            <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.8 1.5h2.4l.4 1.6a5.1 5.1 0 0 1 1.2.7l1.5-.6 1.2 2.1-1.2 1.1c.1.4.1.8.1 1.1s0 .7-.1 1.1l1.2 1.1-1.2 2.1-1.5-.6c-.4.3-.8.5-1.2.7l-.4 1.6H6.8l-.4-1.6a5.1 5.1 0 0 1-1.2-.7l-1.5.6-1.2-2.1 1.2-1.1c-.1-.4-.1-.8-.1-1.1s0-.7.1-1.1L2.5 5.3l1.2-2.1 1.5.6c.4-.3.8-.5 1.2-.7z"/><circle cx="8" cy="8" r="2.1"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <nav class="wb-tabs" role="tablist" aria-label="Modos do Explorador">
+        <button
+          id="tab-btn-explorer"
+          type="button"
+          role="tab"
+          class="wb-tab active"
+          aria-selected="true"
+          aria-controls="panel-explorer"
+          data-tab="explorer"
+          data-testid="tab-explorer"
+        >
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5h4.2l1.2 1.3H14v8.7H2z"/></svg>
+          <span>Explorer</span>
+        </button>
+        <button
+          id="tab-btn-search"
+          type="button"
+          role="tab"
+          class="wb-tab"
+          aria-selected="false"
+          aria-controls="panel-search"
+          data-tab="search"
+          data-testid="tab-search"
+        >
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3.3 3.3"/></svg>
+          <span>Search</span>
+        </button>
+        <button
+          id="tab-btn-git"
+          type="button"
+          role="tab"
+          class="wb-tab"
+          aria-selected="false"
+          aria-controls="panel-git"
+          data-tab="git"
+          data-testid="tab-git"
+        >
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="6" r="1.5"/><path d="M4.5 5v6M4.5 8.5c0-1.5 7-0.5 7-1"/></svg>
+          <span>Git</span>
+          <span id="git-tab-badge" class="tab-badge hidden">0</span>
+        </button>
+      </nav>
+    </header>
+
+    <!-- Main Split Stage: Sidebar (Auto-Minimize + Hover Auto-Open) + Embedded Preview -->
+    <main id="wb-stage" class="wb-stage" data-preview-open="false" data-tree-pinned="false" data-tree-hovered="false">
+      <!-- Slim Minimized Rail (Visible when preview is open and tree is collapsed) -->
+      <aside
+        id="tree-rail"
+        class="tree-rail"
+        aria-label="Barra minimizada da árvore de arquivos"
+        title="Passe o mouse para abrir o explorador"
+        data-testid="tree-rail"
+      >
+        <button
+          id="rail-expand-btn"
+          type="button"
+          class="rail-btn"
+          aria-label="Abrir árvore de arquivos"
+          aria-expanded="false"
+          title="Abrir árvore (ou passe o mouse)"
+        >
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5h4.2l1.2 1.3H14v8.7H2z"/></svg>
+        </button>
+        <span class="rail-label">EXPLORER</span>
+        <span class="rail-spacer"></span>
+        <button
+          id="rail-pin-btn"
+          type="button"
+          class="rail-btn"
+          aria-pressed="false"
+          title="Fixar árvore aberta"
+          aria-label="Fixar árvore aberta"
+        >
+          <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 2.5h5l-1 4 2 2v1H8.5v4h-1v-4H4.5v-1l2-2z"/></svg>
+        </button>
+      </aside>
+
+      <!-- Left Workbench Sidebar (Explorer / Search / Git) -->
+      <section id="sidebar-pane" class="sidebar-pane" aria-label="Painel Lateral do Projeto" data-testid="sidebar-pane">
+        <!-- EXPLORER TAB -->
+        <div id="panel-explorer" class="tab-panel active" role="tabpanel" aria-labelledby="tab-btn-explorer">
+          <div class="pane-toolbar">
+            <div class="filter-box">
+              <svg class="icon filter-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11l-4.2 4.8v4l-2.6 1.2V8.8z"/></svg>
+              <input
+                id="tree-filter"
+                type="search"
+                class="filter-input"
+                placeholder="Filtrar arquivos..."
+                aria-label="Filtrar arquivos por nome"
+                autocomplete="off"
+                data-testid="tree-filter"
+              >
+              <button id="tree-filter-clear" type="button" class="clear-btn hidden" title="Limpar filtro" aria-label="Limpar filtro">×</button>
+            </div>
+            <div class="toolbar-actions">
+              <button id="btn-new-file" type="button" class="icon-btn" title="Novo Arquivo" aria-label="Novo Arquivo" data-testid="btn-new-file">
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h5.5L13 5.5V14H4z"/><path d="M9.5 2v3.5H13M6.5 9.5h4M8.5 7.5v4"/></svg>
+              </button>
+              <button id="btn-new-folder" type="button" class="icon-btn" title="Nova Pasta" aria-label="Nova Pasta" data-testid="btn-new-folder">
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h4.3l1.2 1.3h7.5v8.7h-13z"/><path d="M6.2 9h3.6M8 7.2v3.6"/></svg>
+              </button>
+              <button id="btn-refresh-tree" type="button" class="icon-btn" title="Atualizar Árvore" aria-label="Atualizar Árvore" data-testid="btn-refresh-tree">
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.3-3.4"/><path d="M13 2.5v2.7h-2.7"/></svg>
+              </button>
+              <button id="btn-collapse-all" type="button" class="icon-btn" title="Colapsar Pastas" aria-label="Colapsar Pastas" data-testid="btn-collapse-all">
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h10M5 6l3 2.5L11 6M5 12l3-2.5L11 12"/></svg>
+              </button>
+              <button id="btn-toggle-hidden" type="button" class="icon-btn" aria-pressed="false" title="Mostrar Ocultos e Ignorados (.git, node_modules)" aria-label="Mostrar arquivos ocultos e ignorados" data-testid="btn-toggle-hidden">
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.8"/></svg>
+              </button>
+              <button id="btn-pin-tree" type="button" class="icon-btn" aria-pressed="false" title="Fixar árvore aberta ao visualizar arquivos" aria-label="Fixar árvore" data-testid="btn-pin-tree">
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 2.5h5l-1 4 2 2v1H8.5v4h-1v-4H4.5v-1l2-2z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div id="tree-container" class="tree-container" role="tree" aria-label="Arquivos do Projeto" data-testid="tree-container">
+            <div class="empty-state">Carregando arquivos...</div>
+          </div>
+        </div>
+
+        <!-- SEARCH TAB -->
+        <div id="panel-search" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-search">
+          <form id="search-form" class="search-form">
+            <div class="search-input-row">
+              <input
+                id="search-query"
+                type="search"
+                class="search-input"
+                placeholder="Buscar texto nos arquivos..."
+                aria-label="Buscar texto nos arquivos"
+                autocomplete="off"
+                data-testid="search-query"
+              >
+              <button id="search-submit-btn" type="submit" class="btn btn-primary btn-sm">Buscar</button>
+            </div>
+            <div class="search-options">
+              <label class="check-pill" title="Diferenciar maiúsculas e minúsculas">
+                <input id="search-case" type="checkbox">
+                <span>Aa</span>
+              </label>
+              <label class="check-pill" title="Incluir pastas ignoradas (node_modules, dist, .temp)">
+                <input id="search-ignored" type="checkbox">
+                <span>Ignorados</span>
+              </label>
+              <span id="search-meta" class="search-meta"></span>
+            </div>
+          </form>
+          <div id="search-results" class="search-results" data-testid="search-results">
+            <div class="empty-state">Digite um termo para pesquisar no projeto.</div>
+          </div>
+        </div>
+
+        <!-- GIT TAB -->
+        <div id="panel-git" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-git">
+          <div class="pane-toolbar git-toolbar">
+            <span id="git-summary" class="git-summary">Alterações do repositório</span>
+            <button id="btn-refresh-git" type="button" class="icon-btn" title="Atualizar status do Git" aria-label="Atualizar status do Git" data-testid="btn-refresh-git">
+              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.3-3.4"/><path d="M13 2.5v2.7h-2.7"/></svg>
+            </button>
+          </div>
+          <div id="git-list" class="git-list" data-testid="git-list">
+            <div class="empty-state">Verificando repositório Git...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Embedded Preview Pane -->
+      <section id="preview-pane" class="preview-pane hidden" aria-label="Preview do Arquivo" data-testid="preview-pane">
+        <header class="preview-header">
+          <div class="preview-title-wrap">
+            <span id="preview-file-icon" class="preview-file-icon" aria-hidden="true"></span>
+            <div class="preview-titles">
+              <div class="preview-filename-row">
+                <span id="preview-filename" class="preview-filename" data-testid="preview-filename"></span>
+                <span id="preview-dirty-dot" class="dirty-dot hidden" title="Alterações não salvas"></span>
+              </div>
+              <span id="preview-relpath" class="preview-relpath"></span>
+            </div>
+          </div>
+
+          <div class="preview-actions">
+            <!-- Split button: Primary external app + dropdown -->
+            <div class="split-btn-group">
+              <button
+                id="btn-open-primary-ext"
+                type="button"
+                class="btn btn-primary btn-sm"
+                title="Abrir no aplicativo associado"
+                data-testid="btn-open-primary-ext"
+              >
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 2.5h4.5V7M13.5 2.5 7 9M6.5 4.5H3.5v8h8v-3"/></svg>
+                <span id="btn-open-primary-label">Abrir Externo</span>
+              </button>
+              <button
+                id="btn-open-with-menu"
+                type="button"
+                class="btn btn-primary btn-sm split-chevron"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                title="Abrir com outro programa..."
+                aria-label="Abrir com outro programa"
+                data-testid="btn-open-with-menu"
+              >
+                <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 6 3.5 4 3.5-4"/></svg>
+              </button>
+            </div>
+
+            <button id="btn-show-in-folder" type="button" class="btn btn-ghost btn-sm" title="Mostrar na Pasta (Windows Explorer)" data-testid="btn-show-in-folder">
+              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3.5h4.2l1.2 1.3h7.6v8.7h-13z"/></svg>
+              <span class="hide-narrow">Pasta</span>
+            </button>
+
+            <button id="btn-open-fileview" type="button" class="btn btn-ghost btn-sm" title="Abrir no FileView nativo do Antigravity" data-testid="btn-open-fileview">
+              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.2"/><path d="M9.5 2.5v11"/></svg>
+              <span class="hide-narrow">FileView</span>
+            </button>
+
+            <button id="btn-toggle-md-mode" type="button" class="btn btn-ghost btn-sm hidden" title="Alternar entre Markdown renderizado e código fonte" data-testid="btn-toggle-md-mode">
+              <span id="btn-toggle-md-label">Código</span>
+            </button>
+
+            <button id="btn-edit-toggle" type="button" class="btn btn-ghost btn-sm hidden" title="Editar arquivo rapidamente" data-testid="btn-edit-toggle">
+              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.5 2.5 13.5 4.5 5.5 12.5H3.5v-2z"/></svg>
+              <span>Editar</span>
+            </button>
+
+            <button id="btn-save-file" type="button" class="btn btn-accent btn-sm hidden" title="Salvar alterações (Ctrl+S)" data-testid="btn-save-file">
+              <span>Salvar</span>
+            </button>
+
+            <button id="btn-copy-mention" type="button" class="btn btn-ghost btn-sm" title="Copiar @mention para o chat" aria-label="Copiar @mention para o chat" data-testid="btn-copy-mention">
+              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.3"/><path d="M10.3 8v1.2a1.8 1.8 0 0 0 3.6 0V8a5.9 5.9 0 1 0-2.4 4.7"/></svg>
+              <span>Copiar @</span>
+            </button>
+
+            <button id="btn-close-preview" type="button" class="icon-btn" title="Fechar Preview (Esc)" aria-label="Fechar Preview" data-testid="btn-close-preview">
+              <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <div id="preview-meta-bar" class="preview-meta-bar hidden"></div>
+
+        <div id="preview-body" class="preview-body" data-testid="preview-body">
+          <div class="empty-state">Selecione um arquivo para visualizar.</div>
+        </div>
+
+        <div id="preview-editor-wrap" class="preview-editor-wrap hidden">
+          <textarea
+            id="preview-editor"
+            class="preview-editor"
+            spellcheck="false"
+            aria-label="Editor de conteúdo do arquivo"
+            data-testid="preview-editor"
+          ></textarea>
+        </div>
+      </section>
+    </main>
+
+    <!-- Status / Toast Footer -->
+    <footer class="wb-footer">
+      <span id="status-text" class="status-text">Pronto</span>
+      <span class="spacer"></span>
+      <span id="status-stats" class="status-stats"></span>
+    </footer>
+  </div>
+
+  <!-- Floating Context / Open With Menu -->
+  <div id="context-menu" class="context-menu hidden" role="menu" aria-label="Ações do arquivo" data-testid="context-menu"></div>
+
+  <!-- Workspace Switcher Modal -->
+  <div id="ws-modal-backdrop" class="modal-backdrop hidden" role="presentation">
+    <div id="ws-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="ws-modal-title" data-testid="ws-modal">
+      <header class="modal-header">
+        <h2 id="ws-modal-title" class="modal-title">Selecionar Pasta do Projeto</h2>
+        <button id="ws-modal-close" type="button" class="icon-btn" aria-label="Fechar">×</button>
+      </header>
+      <div class="modal-body">
+        <form id="ws-manual-form" class="ws-manual-form">
+          <label class="field-label" for="ws-manual-input">Abrir caminho local diretamente</label>
+          <div class="field-row">
+            <input id="ws-manual-input" type="text" class="text-input" placeholder="Ex.: d:\MAX\PROJETOS\meu-projeto" autocomplete="off">
+            <button type="submit" class="btn btn-primary btn-sm">Abrir</button>
+          </div>
+        </form>
+
+        <div id="ws-sections" class="ws-sections"></div>
+
+        <div class="ws-browser">
+          <div class="ws-browser-header">
+            <span class="field-label">Navegar Pastas Locais</span>
+            <div class="ws-browser-nav">
+              <button id="ws-browse-up" type="button" class="btn btn-ghost btn-xs" title="Pasta acima">↑ Subir</button>
+              <button id="ws-browse-select-current" type="button" class="btn btn-primary btn-xs">Usar esta pasta</button>
+            </div>
+          </div>
+          <div id="ws-browse-path" class="ws-browse-path"></div>
+          <div id="ws-browse-list" class="ws-browse-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- External Apps Settings Modal -->
+  <div id="ext-modal-backdrop" class="modal-backdrop hidden" role="presentation">
+    <div id="ext-modal" class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="ext-modal-title" data-testid="ext-modal">
+      <header class="modal-header">
+        <h2 id="ext-modal-title" class="modal-title">Configurações</h2>
+        <button id="ext-modal-close" type="button" class="icon-btn" aria-label="Fechar">×</button>
+      </header>
+      <div class="modal-body">
+        <section class="ext-section">
+          <h3 class="section-heading">Associações por Extensão</h3>
+          <p class="section-desc">Define qual programa abre no botão principal para cada extensão (ex.: <code>.md</code> → Notepad++).</p>
+          <div id="ext-assoc-list" class="assoc-list"></div>
+          <form id="ext-assoc-form" class="inline-form">
+            <input id="assoc-ext-input" type="text" class="text-input input-xs" placeholder=".md" aria-label="Extensão" required>
+            <select id="assoc-app-select" class="text-input" aria-label="Aplicativo"></select>
+            <button type="submit" class="btn btn-primary btn-sm">Associar</button>
+          </form>
+        </section>
+
+        <section class="ext-section">
+          <h3 class="section-heading">Aplicativos Detectados &amp; Customizados</h3>
+          <div id="ext-apps-list" class="apps-list"></div>
+          <form id="ext-custom-form" class="custom-app-form">
+            <h4 class="sub-heading">Adicionar Executável Customizado</h4>
+            <div class="form-grid">
+              <label class="field-group">
+                <span class="field-label">Nome</span>
+                <input id="custom-app-name" type="text" class="text-input" placeholder="Ex.: Sublime Text" required>
+              </label>
+              <label class="field-group">
+                <span class="field-label">Caminho do Executável (.exe)</span>
+                <input id="custom-app-path" type="text" class="text-input" placeholder="C:\Program Files\...\app.exe" required>
+              </label>
+              <label class="field-group">
+                <span class="field-label">Argumentos (opcional)</span>
+                <input id="custom-app-args" type="text" class="text-input" placeholder="Ex.: -n">
+              </label>
+            </div>
+            <div class="form-footer">
+              <button type="submit" class="btn btn-primary btn-sm">Adicionar Aplicativo</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic Prompt / Confirm Modal (CRUD: New File, New Folder, Rename, Delete) -->
+  <div id="dialog-backdrop" class="modal-backdrop hidden" role="presentation">
+    <div id="dialog-modal" class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="dialog-title" data-testid="dialog-modal">
+      <header class="modal-header">
+        <h2 id="dialog-title" class="modal-title"></h2>
+        <button id="dialog-close" type="button" class="icon-btn" aria-label="Fechar">×</button>
+      </header>
+      <form id="dialog-form" class="modal-body">
+        <p id="dialog-message" class="dialog-message hidden"></p>
+        <div id="dialog-input-wrap" class="field-group">
+          <label id="dialog-input-label" class="field-label" for="dialog-input"></label>
+          <input id="dialog-input" type="text" class="text-input" autocomplete="off">
+        </div>
+        <p id="dialog-error" class="form-error hidden"></p>
+        <div class="dialog-actions">
+          <button id="dialog-cancel" type="button" class="btn btn-ghost btn-sm">Cancelar</button>
+          <button id="dialog-confirm" type="submit" class="btn btn-primary btn-sm">Confirmar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

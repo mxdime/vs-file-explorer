@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none">
+  <defs>
+    <linearGradient id="folderBack" x1="16" y1="20" x2="108" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0284C7"/>
+      <stop offset="100%" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="folderFront" x1="18" y1="40" x2="110" y2="108" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#2563EB"/>
+      <stop offset="100%" stop-color="#1E40AF"/>
+    </linearGradient>
+    <linearGradient id="badgeGrad" x1="78" y1="74" x2="114" y2="110" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Folder back & tab (~10% safe margin inside 12..116) -->
+  <path d="M16 32C16 25.373 21.373 20 28 20H49.5C52.68 20 55.73 21.263 57.98 23.515L64.46 30H100C106.627 30 112 35.373 112 42V88C112 94.627 106.627 100 100 100H28C21.373 100 16 94.627 16 88V32Z" fill="url(#folderBack)" stroke="#0F172A" stroke-opacity="0.35" stroke-width="2.5"/>
+
+  <!-- Inner file sheet peeking out -->
+  <rect x="28" y="34" width="72" height="52" rx="7" fill="#F8FAFC" stroke="#0F172A" stroke-opacity="0.25" stroke-width="2"/>
+  <rect x="36" y="42" width="22" height="5" rx="2.5" fill="#0EA5E9"/>
+  <rect x="62" y="42" width="28" height="5" rx="2.5" fill="#F59E0B"/>
+  <rect x="36" y="51" width="38" height="4.5" rx="2.25" fill="#94A3B8"/>
+
+  <!-- Folder front body -->
+  <path d="M16 50C16 44.477 20.477 40 26 40H102C107.523 40 112 44.477 112 50V94C112 100.627 106.627 106 100 106H28C21.373 106 16 100.627 16 94V50Z" fill="url(#folderFront)" stroke="#E0F2FE" stroke-opacity="0.65" stroke-width="2"/>
+
+  <!-- Crisp tree/code hierarchy lines on front -->
+  <path d="M34 57V84H45" stroke="#BAE6FD" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M34 69H45" stroke="#BAE6FD" stroke-width="3.5" stroke-linecap="round"/>
+  <rect x="51" y="54" width="24" height="6" rx="3" fill="#FBBF24"/>
+  <rect x="51" y="66" width="34" height="6" rx="3" fill="#67E8F9"/>
+  <rect x="51" y="81" width="24" height="6" rx="3" fill="#6EE7B7"/>
+
+  <!-- Explorer badge -->
+  <circle cx="95" cy="91" r="19" fill="url(#badgeGrad)" stroke="#0F172A" stroke-opacity="0.4" stroke-width="2.5"/>
+  <circle cx="95" cy="91" r="16.5" stroke="#ECFDF5" stroke-opacity="0.6" stroke-width="1.5"/>
+  <circle cx="92.5" cy="88.5" r="6.5" stroke="#FFFFFF" stroke-width="3"/>
+  <path d="M97.5 93.5L103 99" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round"/>
+</svg>

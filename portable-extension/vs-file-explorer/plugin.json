@@ -1,0 +1,12 @@
+{
+  "name": "vs-file-explorer",
+  "displayName": "VS File Explorer",
+  "description": "VS Code-style workspace file explorer, grep search, Git status, inline preview with hover auto-expand, full file CRUD, 1-click @mention copy, and external app launcher (Notepad++, VS Code, Explorer) in the Antigravity side pane.",
+  "version": "1.0.0",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Abra o VS File Explorer para navegar pelos arquivos deste projeto",
+    "Busque ocorrências de texto nos arquivos do workspace no VS File Explorer",
+    "Inspecione os arquivos modificados no Git e abra o README no Notepad++"
+  ]
+}

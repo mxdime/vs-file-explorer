@@ -1,0 +1,21 @@
+{
+  "command": "node",
+  "args": ["main.mjs"],
+  "restart_policy": "always",
+  "display_name": "VS File Explorer",
+  "description": "VS Code-style workspace file explorer, grep search, Git status, inline preview, CRUD, and external app launcher for Antigravity.",
+  "has_web_ui": true,
+  "agent_permissions": {
+    "allows_user_interactions": false
+  },
+  "ui_config": {
+    "display_name": "VS File Explorer",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "VS File Explorer"
+      }
+    ]
+  }
+}
