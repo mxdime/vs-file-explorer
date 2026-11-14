@@ -67,11 +67,17 @@ const state = {
   browseState: { currentPath: '', parentPath: '', folders: [] },
   contextMenuOpen: false,
   autoSelectedHostUri: false,
+  fsWatchSeq: 0,
+  fsWatchRoot: '',
+  fsWatchAbort: null,
+  fsWatchPendingDirs: new Set(),
+  fsWatchPendingGit: false,
 };
 
 let hoverLeaveTimer = null;
 let toastTimer = null;
 let filterDebounceTimer = null;
+let gitWatchDebounceTimer = null;
 let dialogResolver = null;
 
 // ---------- Theme Sync ----------
@@ -116,14 +122,16 @@ function resolveApiUrl(endpoint) {
   return new URL(clean, window.location.href);
 }
 
-async function apiGet(endpoint, query = {}) {
+async function apiGet(endpoint, query = {}, options = {}) {
   const url = resolveApiUrl(endpoint);
   for (const [key, val] of Object.entries(query)) {
     if (val !== undefined && val !== null && val !== '') {
       url.searchParams.set(key, String(val));
     }
   }
-  const res = await getFetcher()(url.pathname + url.search, { method: 'GET' });
+  const fetchOpts = { method: 'GET' };
+  if (options.signal) fetchOpts.signal = options.signal;
+  const res = await getFetcher()(url.pathname + url.search, fetchOpts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data.error || `Erro HTTP ${res.status}`);
@@ -425,21 +433,136 @@ async function onWorkspaceActivated() {
   $('search-meta').textContent = '';
   closePreview(true);
   await Promise.all([loadFolder('', true), refreshGitStatus()]);
+  startFsWatcher(state.activeRoot);
+}
+
+// ---------- Real-Time Workspace Watcher & Drag Mentions ----------
+function attachMentionDrag(el, relPath) {
+  if (!el || !relPath) return;
+  el.draggable = true;
+  el.addEventListener('dragstart', (e) => {
+    if (!e.dataTransfer) return;
+    const mention = `@${relPath}`;
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('text/plain', mention);
+    e.dataTransfer.setData('application/x-antigravity-mention', mention);
+    el.classList.add('is-dragging');
+  });
+  el.addEventListener('dragend', () => {
+    el.classList.remove('is-dragging');
+  });
+}
+
+function stopFsWatcher() {
+  if (state.fsWatchAbort) {
+    state.fsWatchAbort.abort();
+    state.fsWatchAbort = null;
+  }
+  if (gitWatchDebounceTimer) {
+    clearTimeout(gitWatchDebounceTimer);
+    gitWatchDebounceTimer = null;
+  }
+  state.fsWatchPendingDirs.clear();
+  state.fsWatchPendingGit = false;
+  state.fsWatchRoot = '';
+}
+
+function scheduleGitWatchRefresh() {
+  if (gitWatchDebounceTimer) clearTimeout(gitWatchDebounceTimer);
+  gitWatchDebounceTimer = setTimeout(() => {
+    gitWatchDebounceTimer = null;
+    if (!state.activeRoot || document.hidden || state.gitBusy) return;
+    refreshGitStatus({ discoverRepos: true }).catch(() => {});
+  }, 400);
+}
+
+async function applyFsWatchBatch(dirs, gitChanged) {
+  if (!state.activeRoot) return;
+  if (document.hidden) {
+    for (const d of dirs) state.fsWatchPendingDirs.add(d);
+    if (gitChanged) state.fsWatchPendingGit = true;
+    return;
+  }
+
+  const dirsToReload = dirs.filter(
+    (d) => d === '' || (state.expanded.has(d) && state.treeNodes.has(d)),
+  );
+  if (dirsToReload.length) {
+    await Promise.all(dirsToReload.map((d) => loadFolder(d, true, { silent: true })));
+  }
+  if (gitChanged || dirs.length) {
+    scheduleGitWatchRefresh();
+  }
+}
+
+async function waitForDocumentVisible() {
+  if (!document.hidden) return;
+  await new Promise((resolve) => {
+    const onVis = () => {
+      if (!document.hidden) {
+        document.removeEventListener('visibilitychange', onVis);
+        resolve();
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+  });
+}
+
+async function startFsWatcher(rootPath) {
+  stopFsWatcher();
+  if (!rootPath) return;
+
+  const controller = new AbortController();
+  state.fsWatchAbort = controller;
+  state.fsWatchRoot = rootPath;
+  state.fsWatchSeq = 0;
+
+  while (state.activeRoot === rootPath && state.fsWatchAbort === controller && !controller.signal.aborted) {
+    if (document.hidden) {
+      await waitForDocumentVisible();
+      if (state.activeRoot !== rootPath || controller.signal.aborted) break;
+      if (state.fsWatchPendingDirs.size || state.fsWatchPendingGit) {
+        const pendingDirs = Array.from(state.fsWatchPendingDirs);
+        const pendingGit = state.fsWatchPendingGit;
+        state.fsWatchPendingDirs.clear();
+        state.fsWatchPendingGit = false;
+        await applyFsWatchBatch(pendingDirs, pendingGit);
+      }
+    }
+
+    try {
+      const res = await apiGet(
+        '/api/fs/events',
+        { root: rootPath, since: state.fsWatchSeq },
+        { signal: controller.signal },
+      );
+      if (state.activeRoot !== rootPath || controller.signal.aborted) break;
+      if (typeof res.seq === 'number') state.fsWatchSeq = res.seq;
+      if ((res.dirs && res.dirs.length) || res.gitChanged) {
+        await applyFsWatchBatch(res.dirs || [], Boolean(res.gitChanged));
+      }
+    } catch (err) {
+      if (err?.name === 'AbortError' || controller.signal.aborted) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
 }
 
 // ---------- Tree Loading & Rendering ----------
-async function loadFolder(relPath = '', force = false) {
+async function loadFolder(relPath = '', force = false, { silent = false } = {}) {
   if (!state.activeRoot) return;
   const existing = state.treeNodes.get(relPath);
   if (existing?.loading) return;
   if (existing?.loaded && !force) return;
 
-  state.treeNodes.set(relPath, {
-    entries: existing?.entries || [],
-    loaded: false,
-    loading: true,
-  });
-  renderTree();
+  if (!silent || !existing?.loaded) {
+    state.treeNodes.set(relPath, {
+      entries: existing?.entries || [],
+      loaded: false,
+      loading: true,
+    });
+    renderTree();
+  }
 
   try {
     const data = await apiGet('/api/tree', {
@@ -454,8 +577,13 @@ async function loadFolder(relPath = '', force = false) {
       loading: false,
     });
   } catch (err) {
-    state.treeNodes.set(relPath, { entries: [], loaded: true, loading: false });
-    showToast(err.message, true);
+    if (silent && relPath !== '') {
+      state.treeNodes.delete(relPath);
+      state.expanded.delete(relPath);
+    } else {
+      state.treeNodes.set(relPath, { entries: [], loaded: true, loading: false });
+      if (!silent) showToast(err.message, true);
+    }
   }
   renderTree();
 }
@@ -559,6 +687,7 @@ function renderTree() {
     if (state.selectedPath === entry.relPath) el.classList.add('selected');
     if (entry.name.startsWith('.')) el.classList.add('is-hidden-entry');
     if (gitStatus) el.classList.add(`git-${gitStatus.toLowerCase()}`);
+    attachMentionDrag(el, entry.relPath);
 
     // Indent guides
     const guides = document.createElement('span');
@@ -992,6 +1121,7 @@ function renderGitFileList(container, items, isStaged) {
     const row = document.createElement('div');
     row.className = 'git-row';
     if (state.preview?.relPath === wsRelPath && state.previewOpen) row.classList.add('selected');
+    attachMentionDrag(row, wsRelPath);
 
     const slash = item.relPath.lastIndexOf('/');
     const fileName = slash === -1 ? item.relPath : item.relPath.slice(slash + 1);

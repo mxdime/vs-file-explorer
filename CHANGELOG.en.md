@@ -9,6 +9,17 @@ and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-11-14
+
+### Added
+- **Real-Time Tree & Git Updates (`lib/fs-watcher.mjs` + `GET /api/fs/events`):**
+  - Native workspace watching via `fs.watch(root, { recursive: true })` with cursor-based long-polling (`seq`) compatible with `SidecarApp`.
+  - Early noise filtering (`node_modules/`, `.venv/`, `venv/`, `__pycache__/`, `dist/`, `build/`, `.next/`, `.temp/`, `.git/objects/`, `.git/*.lock`) and Git state detection (`.git/HEAD`, `.git/index`, `.git/refs/heads/`, `.git/refs/remotes/`).
+  - Coalesced `250ms` debounce, silent refresh (`silent: true`) scoped strictly to affected expanded folders, debounced `refreshGitStatus` (`400ms`), and automatic pause while hidden (`document.hidden`).
+- **Drag & Drop `@mention`:**
+  - Explorer tree rows (`.tree-row`) and Git rows (`.git-row`) are now `draggable="true"`, populating `text/plain` and `application/x-antigravity-mention` with `@relative/path`.
+- **Tests:** Expanded test suite to 27 passing tests across 6 suites (`fs-watcher & drag-mention` + `/api/fs/events`).
+
 ## [1.0.1] - 2026-11-13
 
 ### Added

@@ -2200,6 +2200,11 @@ button {
   color: var(--pe-error);
 }
 
+.tree-row.is-dragging,
+.git-row.is-dragging {
+  opacity: 0.55;
+}
+
 @media (max-width: 480px) {
   .hide-narrow {
     display: none;

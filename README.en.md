@@ -2,7 +2,7 @@
 
 🌐 **Language / Idioma:** **English** · [Português (BR)](README.md)
 
-![Version](https://img.shields.io/badge/version-1.0.1-007ACC)
+![Version](https://img.shields.io/badge/version-1.1.0-007ACC)
 ![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933)
 ![Antigravity](https://img.shields.io/badge/Antigravity-2.0%20AUX__PANE-22A7F0)
 ![License](https://img.shields.io/badge/license-MIT-blue)
@@ -63,7 +63,7 @@ node scripts/sync-plugin.mjs --portable-only
 
 ```text
 vs-file-explorer/
-├── plugin.json                         # Antigravity plugin manifest (v1.0.1)
+├── plugin.json                         # Antigravity plugin manifest (v1.1.0)
 ├── README.md                           # Portuguese (BR) documentation
 ├── README.en.md                        # English documentation
 ├── CHANGELOG.md                        # Version history (PT-BR)

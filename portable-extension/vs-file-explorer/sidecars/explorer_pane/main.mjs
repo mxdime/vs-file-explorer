@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getExternalAppsConfig, launchExternalApp, saveExternalAppsConfig } from './lib/external-apps.mjs';
+import { createWorkspaceWatcher } from './lib/fs-watcher.mjs';
 import {
   createFile,
   createFolder,
@@ -260,8 +261,9 @@ export function writeSystemClipboard(text, { spawnFn = spawn, platform = process
   });
 }
 
-export function createExplorerHandlers({ dataDir, spawnFn, execFileFn, clipboardFn } = {}) {
+export function createExplorerHandlers({ dataDir, spawnFn, execFileFn, clipboardFn, fsWatcher } = {}) {
   const resolveConvUris = createMetadataResolver(execFileFn);
+  const watcher = fsWatcher || createWorkspaceWatcher();
   const wrap = (fn) => async (data = {}) => {
     try {
       return await fn(data);
@@ -454,6 +456,14 @@ export function createExplorerHandlers({ dataDir, spawnFn, execFileFn, clipboard
       if (clipboardFn) return clipboardFn(data.text);
       return writeSystemClipboard(data.text, { spawnFn });
     }),
+
+    getFsEvents: wrap(async (data) => {
+      const activeRoot = resolveActiveRoot(data.root, dataDir);
+      const since = Number.parseInt(data.since, 10) || 0;
+      return watcher.waitForEvents(activeRoot, since);
+    }),
+
+    closeWatcher: () => watcher.close(),
   };
 }
 
@@ -466,6 +476,7 @@ function registerRoutes(registerPage, registerApi, options) {
   registerApi('/api/workspaces', h.getWorkspaces, 'GET');
   registerApi('/api/workspaces/select', h.selectWorkspace, 'POST');
   registerApi('/api/tree', h.getTree, 'GET');
+  registerApi('/api/fs/events', h.getFsEvents, 'GET');
   registerApi('/api/preview', h.getPreview, 'GET');
   registerApi('/api/crud', h.postCrud, 'POST');
   registerApi('/api/search', h.getSearch, 'GET');
@@ -485,22 +496,23 @@ function registerRoutes(registerPage, registerApi, options) {
   registerApi('/api/external-apps/config', h.postExternalAppsConfig, 'POST');
   registerApi('/api/open-external', h.postOpenExternal, 'POST');
   registerApi('/api/clipboard', h.postClipboard, 'POST');
+  return h;
 }
 
 /** Creates a standalone HTTP request listener for unit testing outside the Antigravity host. */
-export function createRouter({ dataDir, spawnFn, execFileFn, clipboardFn, token } = {}) {
+export function createRouter({ dataDir, spawnFn, execFileFn, clipboardFn, fsWatcher, token } = {}) {
   const routes = new Map();
   const addRoute = (path, handler, method = 'GET') => {
     if (!routes.has(path)) routes.set(path, new Map());
     routes.get(path).set(method.toUpperCase(), handler);
   };
-  registerRoutes(
+  const handlers = registerRoutes(
     (path, handler) => addRoute(path, handler, 'GET'),
     addRoute,
-    { dataDir, spawnFn, execFileFn, clipboardFn },
+    { dataDir, spawnFn, execFileFn, clipboardFn, fsWatcher },
   );
 
-  return (req, res) => {
+  const listener = (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     if (req.method !== 'GET' && token) {
       const provided = req.headers['x-sidecar-token'] || url.searchParams.get('token');
@@ -545,17 +557,20 @@ export function createRouter({ dataDir, spawnFn, execFileFn, clipboardFn, token 
       }
     });
   };
+  listener.close = () => handlers.closeWatcher();
+  return listener;
 }
 
 /** Binds all Project Explorer routes onto a SidecarApp instance. */
-export function createExplorerApp({ sidecarApp, dataDir, spawnFn, execFileFn, clipboardFn } = {}) {
+export function createExplorerApp({ sidecarApp, dataDir, spawnFn, execFileFn, clipboardFn, fsWatcher } = {}) {
   const app = sidecarApp || (sdk.SidecarApp ? new sdk.SidecarApp() : null);
   if (!app) throw new Error('SidecarApp is unavailable outside the Antigravity sidecar runtime');
-  registerRoutes(
+  const handlers = registerRoutes(
     (path, handler) => app.page(path, handler),
     (path, handler, method) => app.api(path, handler, method),
-    { dataDir, spawnFn, execFileFn, clipboardFn },
+    { dataDir, spawnFn, execFileFn, clipboardFn, fsWatcher },
   );
+  process.once('exit', () => handlers.closeWatcher());
   return app;
 }
 

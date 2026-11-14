@@ -33,6 +33,10 @@ import {
   writeFileContent,
 } from '../sidecars/explorer_pane/lib/fs-crud.mjs';
 import {
+  classifyWatchEvent,
+  createWorkspaceWatcher,
+} from '../sidecars/explorer_pane/lib/fs-watcher.mjs';
+import {
   applyStash,
   commitChanges,
   createBranch,
@@ -622,6 +626,7 @@ describe('search-git', () => {
 
 describe('main.mjs HTTP API', () => {
   let server;
+  let routerRef;
   let baseUrl;
   let apiRoot;
   let apiDataDir;
@@ -638,6 +643,7 @@ describe('main.mjs HTTP API', () => {
     const router = createRouter({
       dataDir: apiDataDir,
       token,
+      fsWatcher: createWorkspaceWatcher({ debounceMs: 50, keepaliveMs: 250 }),
       spawnFn: (cmd, args, opts) => {
         spawnCalls.push({ cmd, args, opts });
         return { unref() {} };
@@ -659,6 +665,7 @@ describe('main.mjs HTTP API', () => {
         cb(new Error('not found'));
       },
     });
+    routerRef = router;
     server = http.createServer(router);
     await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
     const addr = server.address();
@@ -666,6 +673,7 @@ describe('main.mjs HTTP API', () => {
   });
 
   after(async () => {
+    routerRef?.close?.();
     if (server) {
       await new Promise((resolveClose) => server.close(resolveClose));
     }
@@ -995,5 +1003,103 @@ describe('main.mjs HTTP API', () => {
     const badRepo = await reqJson('POST', '/api/git/stage', { root: ws, repo: '../../Windows', all: true }, headers);
     assert.equal(badRepo.status, 403);
     assert.equal(badRepo.json.code, 'PATH_TRAVERSAL');
+  });
+
+  it('serves GET /api/fs/events for real-time filesystem change notifications', async () => {
+    const watchWs = join(testRoot, 'api-watch-ws');
+    mkdirSync(join(watchWs, 'src'), { recursive: true });
+    const qWs = encodeURIComponent(watchWs);
+
+    // Prime watcher with initial keepalive timeout
+    const initRes = await reqJson('GET', `/api/fs/events?root=${qWs}&since=0`);
+    assert.equal(initRes.status, 200);
+    assert.equal(initRes.json.timeout, true);
+
+    const pollPromise = reqJson('GET', `/api/fs/events?root=${qWs}&since=${initRes.json.seq}`);
+    await new Promise((r) => setTimeout(r, 40));
+    writeFileSync(join(watchWs, 'src', 'live.txt'), 'hello\n', 'utf-8');
+
+    const evRes = await pollPromise;
+    assert.equal(evRes.status, 200);
+    assert.equal(evRes.json.timeout, false);
+    assert.ok(evRes.json.seq > initRes.json.seq);
+    assert.ok(evRes.json.dirs.includes('src'));
+  });
+});
+
+describe('fs-watcher & drag-mention', () => {
+  it('classifies ignored directories, git metadata changes, and workspace parent directories', () => {
+    assert.deepEqual(classifyWatchEvent('node_modules/pkg/index.js'), {
+      ignore: true,
+      gitChanged: false,
+      dir: null,
+    });
+    assert.deepEqual(classifyWatchEvent('.git/objects/ab/1234'), {
+      ignore: true,
+      gitChanged: false,
+      dir: null,
+    });
+    assert.deepEqual(classifyWatchEvent('.git/index.lock'), {
+      ignore: true,
+      gitChanged: false,
+      dir: null,
+    });
+    assert.deepEqual(classifyWatchEvent('.git/index'), {
+      ignore: false,
+      gitChanged: true,
+      dir: null,
+    });
+    assert.deepEqual(classifyWatchEvent('src\\components\\Button.tsx'), {
+      ignore: false,
+      gitChanged: false,
+      dir: 'src/components',
+    });
+    assert.deepEqual(classifyWatchEvent('README.md'), {
+      ignore: false,
+      gitChanged: false,
+      dir: '',
+    });
+  });
+
+  it('debounces rapid filesystem events and ignores noisy directories in createWorkspaceWatcher', async () => {
+    const ws = join(testRoot, 'watcher-unit-ws');
+    mkdirSync(join(ws, 'app'), { recursive: true });
+    mkdirSync(join(ws, 'node_modules', 'dep'), { recursive: true });
+
+    const watcher = createWorkspaceWatcher({ debounceMs: 50, keepaliveMs: 250 });
+    try {
+      const first = await watcher.waitForEvents(ws, 0);
+      assert.equal(first.timeout, true);
+
+      // Ignored path should not wake up waiter before keepalive
+      writeFileSync(join(ws, 'node_modules', 'dep', 'x.js'), 'ignored', 'utf-8');
+      const ignoredRes = await watcher.waitForEvents(ws, first.seq);
+      assert.equal(ignoredRes.timeout, true);
+
+      // Real file create + delete should coalesce cleanly
+      const pending = watcher.waitForEvents(ws, ignoredRes.seq);
+      await new Promise((r) => setTimeout(r, 30));
+      writeFileSync(join(ws, 'app', 'a.txt'), '1', 'utf-8');
+      writeFileSync(join(ws, 'app', 'b.txt'), '2', 'utf-8');
+      rmSync(join(ws, 'app', 'a.txt'));
+
+      const batch = await pending;
+      assert.equal(batch.timeout, false);
+      assert.ok(batch.dirs.includes('app'));
+    } finally {
+      watcher.close();
+    }
+  });
+
+  it('wires draggable @mention attributes and real-time fs watcher in web/app.js', () => {
+    const appJs = readFileSync(
+      join(__dirname, '..', 'sidecars', 'explorer_pane', 'web', 'app.js'),
+      'utf-8',
+    );
+    assert.match(appJs, /function attachMentionDrag\(el, relPath\)/);
+    assert.match(appJs, /el\.draggable = true;/);
+    assert.match(appJs, /setData\('text\/plain', mention\)/);
+    assert.match(appJs, /\/api\/fs\/events/);
+    assert.match(appJs, /function startFsWatcher\(rootPath\)/);
   });
 });

@@ -9,6 +9,17 @@ e este pacote adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ---
 
+## [1.1.0] - 2026-11-14
+
+### Added
+- **Árvore e Git em Tempo Real (`lib/fs-watcher.mjs` + `GET /api/fs/events`):**
+  - Monitoramento nativo via `fs.watch(root, { recursive: true })` com fila de eventos por cursor `seq` e long-polling compatível com o `SidecarApp`.
+  - Filtro imediato de diretórios ruidosos (`node_modules/`, `.venv/`, `venv/`, `__pycache__/`, `dist/`, `build/`, `.next/`, `.temp/`, `.git/objects/`, `.git/*.lock`) e detecção de estado Git (`.git/HEAD`, `.git/index`, `.git/refs/heads/`, `.git/refs/remotes/`).
+  - Debounce (`250ms`), atualização silenciosa (`silent: true`) apenas das pastas expandidas afetadas, debounce no `refreshGitStatus` (`400ms`) e suspensão automática quando o painel está oculto (`document.hidden`).
+- **Drag & Drop com `@mention`:**
+  - Linhas da árvore (`.tree-row`) e da aba Git (`.git-row`) configuradas com `draggable="true"`, enviando `@caminho/relativo` em `text/plain` e `application/x-antigravity-mention` ao arrastar.
+- **Testes:** Suíte expandida para 27 testes em 6 suítes (`fs-watcher & drag-mention` + `/api/fs/events`).
+
 ## [1.0.1] - 2026-11-13
 
 ### Added
