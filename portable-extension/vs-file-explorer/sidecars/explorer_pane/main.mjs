@@ -17,7 +17,32 @@ import {
   renameEntry,
   writeFileContent,
 } from './lib/fs-crud.mjs';
-import { getGitStatus, searchInFiles } from './lib/search-git.mjs';
+import {
+  applyStash,
+  commitChanges,
+  createBranch,
+  deleteBranch,
+  discardFiles,
+  discoverGitRepos,
+  dropStash,
+  fetchRemote,
+  getGitDiff,
+  getGitStatus,
+  listBranches,
+  listRemotes,
+  listStashes,
+  mergeBranch,
+  popStash,
+  pullRemote,
+  pushRemote,
+  pushStash,
+  renameBranch,
+  resolveGitRepoRoot,
+  searchInFiles,
+  stageFiles,
+  switchBranch,
+  unstageFiles,
+} from './lib/search-git.mjs';
 import {
   browseLocalFolders,
   getWorkspacesState,
@@ -304,9 +329,105 @@ export function createExplorerHandlers({ dataDir, spawnFn, execFileFn, clipboard
         includeIgnored: parseBool(data.includeIgnored),
       });
     }),
-    getGitStatus: wrap(async (data) => {
+    getGitRepos: wrap(async (data) => {
       const root = resolveActiveRoot(data.root, dataDir);
-      return getGitStatus(root);
+      return discoverGitRepos(root, {
+        maxDepth: data.maxDepth ? Math.min(5, Math.max(0, Number(data.maxDepth))) : 3,
+        maxRepos: data.maxRepos ? Math.min(50, Math.max(1, Number(data.maxRepos))) : 20,
+      });
+    }),
+    getGitStatus: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      return { ...(await getGitStatus(repoRoot)), repo: repoRel };
+    }),
+    getGitDiff: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      const diffRes = await getGitDiff(repoRoot, data.path || '', {
+        staged: parseBool(data.staged),
+        maxBytes: data.maxBytes ? Number(data.maxBytes) : undefined,
+        maxLines: data.maxLines ? Number(data.maxLines) : undefined,
+      });
+      return { ...diffRes, repo: repoRel };
+    }),
+    getGitBranches: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      return { ...(await listBranches(repoRoot)), repo: repoRel };
+    }),
+    getGitStashes: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      return { ...(await listStashes(repoRoot)), repo: repoRel };
+    }),
+    postGitStage: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      const paths = data.all ? [] : (Array.isArray(data.paths) ? data.paths : (data.path ? [data.path] : []));
+      return { ...(await stageFiles(repoRoot, paths)), repo: repoRel };
+    }),
+    postGitUnstage: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      const paths = data.all ? [] : (Array.isArray(data.paths) ? data.paths : (data.path ? [data.path] : []));
+      return { ...(await unstageFiles(repoRoot, paths)), repo: repoRel };
+    }),
+    postGitDiscard: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      const paths = Array.isArray(data.paths) ? data.paths : (data.path ? [data.path] : []);
+      return { ...(await discardFiles(repoRoot, paths)), repo: repoRel };
+    }),
+    postGitCommit: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      return { ...(await commitChanges(repoRoot, data.message, { amend: parseBool(data.amend) })), repo: repoRel };
+    }),
+    postGitBranch: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      const action = String(data.action || '').trim();
+      let res;
+      switch (action) {
+        case 'list': res = await listBranches(repoRoot); break;
+        case 'create': res = await createBranch(repoRoot, data.name, { startPoint: data.startPoint, checkout: data.checkout !== false }); break;
+        case 'switch': res = await switchBranch(repoRoot, data.name); break;
+        case 'rename': res = await renameBranch(repoRoot, data.oldName, data.newName); break;
+        case 'delete': res = await deleteBranch(repoRoot, data.name, { force: parseBool(data.force) }); break;
+        case 'merge': res = await mergeBranch(repoRoot, data.source ?? data.name); break;
+        default: throw new PathGuardError(`Unsupported branch action: ${action}`, 'INVALID_ACTION', 400);
+      }
+      return { ...res, repo: repoRel };
+    }),
+    postGitStash: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      const action = String(data.action || '').trim();
+      let res;
+      switch (action) {
+        case 'list': res = await listStashes(repoRoot); break;
+        case 'push': res = await pushStash(repoRoot, { message: data.message, includeUntracked: data.includeUntracked !== false }); break;
+        case 'pop': res = await popStash(repoRoot, data.ref); break;
+        case 'apply': res = await applyStash(repoRoot, data.ref); break;
+        case 'drop': res = await dropStash(repoRoot, data.ref); break;
+        default: throw new PathGuardError(`Unsupported stash action: ${action}`, 'INVALID_ACTION', 400);
+      }
+      return { ...res, repo: repoRel };
+    }),
+    postGitRemote: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      const action = String(data.action || '').trim();
+      let res;
+      switch (action) {
+        case 'list': res = { root: repoRoot, remotes: await listRemotes(repoRoot) }; break;
+        case 'fetch': res = await fetchRemote(repoRoot, { remote: data.remote, prune: data.prune !== false }); break;
+        case 'pull': res = await pullRemote(repoRoot, { remote: data.remote, branch: data.branch }); break;
+        case 'push': res = await pushRemote(repoRoot, { remote: data.remote, branch: data.branch, setUpstream: parseBool(data.setUpstream) }); break;
+        default: throw new PathGuardError(`Unsupported remote action: ${action}`, 'INVALID_ACTION', 400);
+      }
+      return { ...res, repo: repoRel };
     }),
     getExternalApps: wrap(() => getExternalAppsConfig({ dataDir })),
     postExternalAppsConfig: wrap((data) => {
@@ -348,7 +469,18 @@ function registerRoutes(registerPage, registerApi, options) {
   registerApi('/api/preview', h.getPreview, 'GET');
   registerApi('/api/crud', h.postCrud, 'POST');
   registerApi('/api/search', h.getSearch, 'GET');
+  registerApi('/api/git/repos', h.getGitRepos, 'GET');
   registerApi('/api/git-status', h.getGitStatus, 'GET');
+  registerApi('/api/git/diff', h.getGitDiff, 'GET');
+  registerApi('/api/git/branches', h.getGitBranches, 'GET');
+  registerApi('/api/git/stashes', h.getGitStashes, 'GET');
+  registerApi('/api/git/stage', h.postGitStage, 'POST');
+  registerApi('/api/git/unstage', h.postGitUnstage, 'POST');
+  registerApi('/api/git/discard', h.postGitDiscard, 'POST');
+  registerApi('/api/git/commit', h.postGitCommit, 'POST');
+  registerApi('/api/git/branch', h.postGitBranch, 'POST');
+  registerApi('/api/git/stash', h.postGitStash, 'POST');
+  registerApi('/api/git/remote', h.postGitRemote, 'POST');
   registerApi('/api/external-apps', h.getExternalApps, 'GET');
   registerApi('/api/external-apps/config', h.postExternalAppsConfig, 'POST');
   registerApi('/api/open-external', h.postOpenExternal, 'POST');

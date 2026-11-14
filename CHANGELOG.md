@@ -9,6 +9,24 @@ e este pacote adere ao [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
 ---
 
+## [1.0.1] - 2026-11-13
+
+### Added
+- **Aba Git v2 (Source Control + Gestão de Branches + Multi-Remote):**
+  - Status detalhado com `git status --porcelain=v2 --branch -uall` (`branch`, `oid`, `upstream`, `ahead`/`behind`, `detached`, `lastCommit`, `remotes`, `stashCount`) mantendo compatibilidade v1.
+  - Fluxo completo de **Stage (`+`) / Unstage (`-`) / Discard (`↶` com confirmação) / Commit (`Ctrl+Enter` + chips `feat:`, `fix:`, `docs:`, `chore:`)** com fila serializada por repositório (`enqueueGitOp`) anti-`index.lock`.
+  - **Gerenciador de Branches** (modal com filtro de locais/remotas, criar, trocar com atalho *"Guardar no Stash e Trocar"* em caso de worktree sujo, renomear, mesclar e excluir bloqueando branch ativa).
+  - **Preview em modo Diff** (`GET /api/git/diff`) com destaque de hunks (`@@`, `+`, `-`), truncamento seguro (>150 KB / 1.500 linhas) e toggle rápido `Diff` ↔ `Arquivo`.
+  - **Atalhos de produtividade IA:** botões **Copiar @** (mentions dos alterados) e **Copiar Diff** integrados ao fallback de área de transferência.
+  - **Seções Stash & Remotes:** *Stash Atual*, *Pop*, *Apply*, *Drop*, e operações multi-remote (`Fetch`, `Pull --ff-only`, `Push`) com seletor explícito de remote (`origin` Forgejo / GitHub).
+  - Cobertura de testes ampliada para **23 testes** passando em `test/project-explorer.test.mjs` (incluindo repositórios Git reais, remote bare e ambiente multi-repo em `.temp/`).
+- **Aba Git v2.1 (Suporte Multi-Repo + Commit Box sob demanda):**
+  - Descoberta automática de múltiplos repositórios Git (`discoverGitRepos` / `GET /api/git/repos`) na raiz e subpastas do workspace (submodules, sub-repos ou pastas pai como `_DEVS/`), exibindo seletor compacto (`#git-repo-switcher`) com branch e contagem de alterações por repo quando há mais de 1 repositório.
+  - Todas as operações `/api/git*` aceitam o parâmetro `repo` validado via `resolveGitRepoRoot` (`resolveInsideWorkspace`) com bloqueio de *path traversal*, compondo caminhos relativos ao workspace para Preview/Diff e `@mention`.
+  - **Commit Box sob demanda:** barra compacta por padrão (`Commit`, `Copiar @`, `Copiar Diff`); a caixa de mensagem e os chips (`feat:`, `fix:`, `docs:`, `chore:`) abrem somente ao clicar em **Commit** (com foco automático) e fecham em `Cancelar`, `Esc` ou após confirmar o commit.
+
+---
+
 ## [1.0.0] - 2026-11-13
 
 ### Added

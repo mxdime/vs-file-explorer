@@ -19,10 +19,44 @@ const state = {
   expanded: new Set(['']),
   selectedPath: '',
   selectedType: 'directory',
-  git: { isRepo: false, files: {}, folders: {}, entries: [] },
+  git: {
+    isRepo: false,
+    files: {},
+    folders: {},
+    entries: [],
+    branch: '',
+    oid: '',
+    upstream: null,
+    ahead: 0,
+    behind: 0,
+    detached: false,
+    stagedCount: 0,
+    unstagedCount: 0,
+    untrackedCount: 0,
+    staged: [],
+    unstaged: [],
+    lastCommit: null,
+    remotes: [],
+    stashCount: 0,
+  },
+  gitFilter: '',
+  gitRepos: [],
+  activeGitRepo: '',
+  gitTotalChangesAllRepos: 0,
+  gitComposerOpen: false,
+  gitStashes: [],
+  gitBranches: { current: '', local: [], remote: [] },
+  gitSelectedRemote: '',
+  gitBusy: false,
+  pendingBranchSwitch: '',
   externalApps: { apps: [], associations: {}, customApps: [] },
   preview: null,
   previewOpen: false,
+  previewMode: 'file', // 'file' | 'diff'
+  previewDiff: null,
+  previewDiffStaged: false,
+  previewGitRepo: '',
+  previewGitRelPath: '',
   treePinned: false,
   treeHovered: false,
   mdRendered: true,
@@ -91,7 +125,12 @@ async function apiGet(endpoint, query = {}) {
   }
   const res = await getFetcher()(url.pathname + url.search, { method: 'GET' });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Erro HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `Erro HTTP ${res.status}`);
+    err.code = data.code || '';
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -103,7 +142,12 @@ async function apiPost(endpoint, body = {}) {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Erro HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `Erro HTTP ${res.status}`);
+    err.code = data.code || '';
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -181,6 +225,7 @@ function isAnyModalOpen() {
   return (
     !$('ws-modal-backdrop').classList.contains('hidden') ||
     !$('ext-modal-backdrop').classList.contains('hidden') ||
+    !$('branch-modal-backdrop').classList.contains('hidden') ||
     !$('dialog-backdrop').classList.contains('hidden')
   );
 }
@@ -339,7 +384,12 @@ async function refreshWorkspaceState({ autoPickHost = false } = {}) {
     await onWorkspaceActivated();
   } else if (!state.activeRoot) {
     $('tree-container').innerHTML = '<div class="empty-state">Selecione uma pasta de projeto no topo.</div>';
-    $('git-list').innerHTML = '<div class="empty-state">Nenhum workspace ativo.</div>';
+    state.git = createEmptyGitState();
+    state.gitRepos = [];
+    state.activeGitRepo = '';
+    state.gitTotalChangesAllRepos = 0;
+    setCommitComposerOpen(false);
+    renderGitTab();
   }
 }
 
@@ -367,6 +417,10 @@ async function onWorkspaceActivated() {
   state.selectedPath = '';
   state.selectedType = 'directory';
   state.searchResults = null;
+  state.gitRepos = [];
+  state.activeGitRepo = '';
+  state.gitTotalChangesAllRepos = 0;
+  setCommitComposerOpen(false);
   $('search-results').innerHTML = '<div class="empty-state">Digite um termo para pesquisar no projeto.</div>';
   $('search-meta').textContent = '';
   closePreview(true);
@@ -485,9 +539,16 @@ function renderTree() {
 
     const { entry, depth, isExpanded } = row;
     const isDir = entry.type === 'directory';
-    const gitStatus = isDir
-      ? state.git.folders?.[entry.relPath]
-      : state.git.files?.[entry.relPath];
+    let gitLookupPath = entry.relPath;
+    if (state.activeGitRepo) {
+      const prefix = `${state.activeGitRepo}/`;
+      gitLookupPath = entry.relPath.startsWith(prefix) ? entry.relPath.slice(prefix.length) : '';
+    }
+    const gitStatus = gitLookupPath
+      ? isDir
+        ? state.git.folders?.[gitLookupPath]
+        : state.git.files?.[gitLookupPath]
+      : '';
 
     const el = document.createElement('div');
     el.className = 'tree-row';
@@ -610,60 +671,342 @@ async function handleTreeEntryClick(entry) {
   await openPreview(entry.relPath);
 }
 
-// ---------- Git Status ----------
-async function refreshGitStatus() {
-  if (!state.activeRoot) return;
-  try {
-    const data = await apiGet('/api/git-status', { root: state.activeRoot });
-    state.git = data;
-    renderGitTab();
-    renderTree();
-  } catch (err) {
-    state.git = { isRepo: false, files: {}, folders: {}, entries: [] };
-    $('git-list').innerHTML = `<div class="empty-state">${escapeHtml(err.message)}</div>`;
+// ---------- Git Status, Actions, Stash, Remotes & Branches ----------
+function createEmptyGitState() {
+  return {
+    isRepo: false,
+    files: {},
+    folders: {},
+    entries: [],
+    branch: '',
+    oid: '',
+    upstream: null,
+    ahead: 0,
+    behind: 0,
+    detached: false,
+    stagedCount: 0,
+    unstagedCount: 0,
+    untrackedCount: 0,
+    staged: [],
+    unstaged: [],
+    lastCommit: null,
+    remotes: [],
+    stashCount: 0,
+  };
+}
+
+function toWorkspaceRelPath(relPath, repoRel = state.activeGitRepo) {
+  const cleanRepo = String(repoRel || '').replace(/^[/\\]+|[/\\]+$/g, '');
+  const cleanFile = String(relPath || '').replace(/^[/\\]+/, '');
+  if (!cleanRepo) return cleanFile;
+  if (!cleanFile) return cleanRepo;
+  return `${cleanRepo}/${cleanFile}`;
+}
+
+function resolveGitLocationForWorkspacePath(wsRelPath) {
+  const clean = String(wsRelPath || '').replace(/^[/\\]+/, '');
+  if (state.activeGitRepo) {
+    const prefix = `${state.activeGitRepo}/`;
+    if (clean.startsWith(prefix)) {
+      return { repo: state.activeGitRepo, gitRelPath: clean.slice(prefix.length) };
+    }
+  }
+  const repos = [...(state.gitRepos || [])].sort((a, b) => (b.relPath?.length || 0) - (a.relPath?.length || 0));
+  for (const r of repos) {
+    if (!r.relPath) return { repo: '', gitRelPath: clean };
+    const prefix = `${r.relPath}/`;
+    if (clean.startsWith(prefix)) {
+      return { repo: r.relPath, gitRelPath: clean.slice(prefix.length) };
+    }
+  }
+  return { repo: '', gitRelPath: clean };
+}
+
+function setCommitComposerOpen(open) {
+  state.gitComposerOpen = Boolean(open);
+  const composer = $('git-commit-composer');
+  const toggleBtn = $('btn-git-commit-toggle');
+  if (composer) composer.classList.toggle('hidden', !state.gitComposerOpen);
+  if (toggleBtn) {
+    toggleBtn.setAttribute('aria-expanded', String(state.gitComposerOpen));
+    toggleBtn.classList.toggle('is-active', state.gitComposerOpen);
+  }
+  if (state.gitComposerOpen) {
+    requestAnimationFrame(() => $('git-commit-msg')?.focus());
   }
 }
 
-function renderGitTab() {
-  const badge = $('git-tab-badge');
-  const count = state.git.entries?.length || 0;
-  badge.textContent = String(count);
-  badge.classList.toggle('hidden', count === 0);
+async function selectGitRepo(repoRelPath) {
+  if (repoRelPath === state.activeGitRepo && state.git.isRepo) return;
+  state.activeGitRepo = repoRelPath || '';
+  state.gitFilter = '';
+  $('git-filter').value = '';
+  $('git-filter-clear').classList.add('hidden');
+  setCommitComposerOpen(false);
+  await refreshGitStatus({ loadStashes: true, discoverRepos: false });
+}
 
-  const list = $('git-list');
-  if (!state.git.isRepo) {
-    $('git-summary').textContent = 'Sem repositório Git';
-    list.innerHTML = '<div class="empty-state">Esta pasta não é um repositório Git.</div>';
+function renderGitRepoSwitcher() {
+  const container = $('git-repo-switcher');
+  if (!container) return;
+  const repos = state.gitRepos || [];
+  if (repos.length <= 1) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
     return;
   }
-  $('git-summary').textContent = count
-    ? `${count} arquivo${count > 1 ? 's' : ''} alterado${count > 1 ? 's' : ''}`
-    : 'Árvore limpa';
-
-  if (!count) {
-    list.innerHTML = '<div class="empty-state">Nenhuma alteração pendente.</div>';
-    return;
-  }
-
+  container.classList.remove('hidden');
   const frag = document.createDocumentFragment();
-  for (const item of state.git.entries) {
+  for (const r of repos) {
+    const isActive = r.relPath === state.activeGitRepo;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.role = 'tab';
+    btn.className = `git-repo-pill${isActive ? ' active' : ''}`;
+    btn.setAttribute('aria-selected', String(isActive));
+    btn.title = `${r.relPath || '(raiz do workspace)'} · ${r.branch || 'HEAD'}`;
+
+    const top = document.createElement('div');
+    top.className = 'git-repo-pill-top';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'git-repo-pill-name';
+    nameEl.textContent = r.name || '(raiz)';
+    const cnt = document.createElement('span');
+    const total = Number(r.totalChanges) || 0;
+    cnt.className = `git-repo-pill-count${total === 0 ? ' zero' : ''}`;
+    cnt.textContent = String(total);
+    top.append(nameEl, cnt);
+
+    const branchEl = document.createElement('div');
+    branchEl.className = 'git-repo-pill-branch';
+    branchEl.textContent = r.branch || 'HEAD';
+
+    btn.append(top, branchEl);
+    btn.addEventListener('click', () => selectGitRepo(r.relPath));
+    frag.appendChild(btn);
+  }
+  container.innerHTML = '';
+  container.appendChild(frag);
+}
+
+async function refreshGitStatus({ loadStashes = false, discoverRepos = true } = {}) {
+  if (!state.activeRoot) return;
+  try {
+    if (discoverRepos) {
+      try {
+        const reposRes = await apiGet('/api/git/repos', { root: state.activeRoot });
+        state.gitRepos = Array.isArray(reposRes.repos) ? reposRes.repos : [];
+        state.gitTotalChangesAllRepos = Number(reposRes.totalChanges) || 0;
+        if (state.gitRepos.length > 0) {
+          if (!state.gitRepos.some((r) => r.relPath === state.activeGitRepo)) {
+            state.activeGitRepo = state.gitRepos[0].relPath || '';
+          }
+        } else {
+          state.activeGitRepo = '';
+        }
+      } catch {
+        // Fallback smoothly if /api/git/repos is unavailable
+      }
+    }
+
+    const data = await apiGet('/api/git-status', {
+      root: state.activeRoot,
+      repo: state.activeGitRepo,
+    });
+    state.git = { ...createEmptyGitState(), ...data };
+
+    if (!discoverRepos && state.gitRepos.length > 0) {
+      const idx = state.gitRepos.findIndex((r) => r.relPath === state.activeGitRepo);
+      if (idx !== -1) {
+        state.gitRepos[idx] = {
+          ...state.gitRepos[idx],
+          branch: state.git.branch || state.git.oid?.slice(0, 7) || 'HEAD',
+          ahead: state.git.ahead || 0,
+          behind: state.git.behind || 0,
+          stagedCount: state.git.stagedCount || 0,
+          unstagedCount: state.git.unstagedCount || 0,
+          untrackedCount: state.git.untrackedCount || 0,
+          totalChanges: state.git.entries?.length || 0,
+        };
+        state.gitTotalChangesAllRepos = state.gitRepos.reduce((acc, r) => acc + (Number(r.totalChanges) || 0), 0);
+      }
+    }
+
+    const remotes = state.git.remotes || [];
+    if (remotes.length && !remotes.some((r) => r.name === state.gitSelectedRemote)) {
+      const origin = remotes.find((r) => r.name === 'origin');
+      state.gitSelectedRemote = (origin || remotes[0]).name;
+    } else if (!remotes.length) {
+      state.gitSelectedRemote = '';
+    }
+    if (state.git.isRepo && (loadStashes || $('git-stash-details').open || state.activeTab === 'git')) {
+      await refreshGitStashes({ skipRender: true });
+    } else if (!state.git.isRepo) {
+      state.gitStashes = [];
+    }
+    renderGitTab();
+    renderTree();
+  } catch (err) {
+    state.git = createEmptyGitState();
+    state.gitStashes = [];
+    renderGitTab(err.message);
+  }
+}
+
+async function refreshGitStashes({ skipRender = false } = {}) {
+  if (!state.activeRoot || !state.git.isRepo) {
+    state.gitStashes = [];
+    return;
+  }
+  try {
+    const res = await apiGet('/api/git/stashes', { root: state.activeRoot, repo: state.activeGitRepo });
+    state.gitStashes = res.stashes || [];
+    state.git.stashCount = state.gitStashes.length;
+    if (!skipRender) renderGitStashAndRemotes();
+  } catch {
+    state.gitStashes = [];
+  }
+}
+
+function setGitBusy(busy, statusMsg = '') {
+  state.gitBusy = busy;
+  for (const id of ['btn-git-commit-toggle', 'btn-git-commit', 'btn-git-fetch', 'btn-git-pull', 'btn-git-push']) {
+    const btn = $(id);
+    if (btn) {
+      const isNet = id === 'btn-git-fetch' || id === 'btn-git-pull' || id === 'btn-git-push';
+      btn.disabled = busy || !state.git.isRepo || (isNet && !(state.git.remotes?.length));
+    }
+  }
+  if (statusMsg) setStatus(statusMsg);
+}
+
+function renderGitTab(errorMessage = '') {
+  renderGitRepoSwitcher();
+
+  const badge = $('git-tab-badge');
+  const repoCount = state.git.entries?.length || 0;
+  const badgeCount = state.gitRepos.length > 1 ? state.gitTotalChangesAllRepos : repoCount;
+  badge.textContent = String(badgeCount);
+  badge.classList.toggle('hidden', badgeCount === 0);
+
+  const g = state.git;
+  $('git-branch-name').textContent = g.isRepo ? (g.branch || g.oid?.slice(0, 7) || 'HEAD') : 'Sem Git';
+  $('git-branch-btn').disabled = !g.isRepo;
+  $('git-detached-badge').classList.toggle('hidden', !(g.isRepo && g.detached));
+
+  const abEl = $('git-ahead-behind');
+  if (g.isRepo && (g.ahead > 0 || g.behind > 0)) {
+    const parts = [];
+    if (g.ahead > 0) parts.push(`↑${g.ahead}`);
+    if (g.behind > 0) parts.push(`↓${g.behind}`);
+    abEl.textContent = parts.join(' ');
+    abEl.classList.remove('hidden');
+  } else {
+    abEl.classList.add('hidden');
+  }
+
+  // Remote selector & network buttons
+  const remoteSelect = $('git-remote-select');
+  const remotes = g.remotes || [];
+  remoteSelect.innerHTML = '';
+  if (!remotes.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(sem remote)';
+    remoteSelect.appendChild(opt);
+    remoteSelect.disabled = true;
+  } else {
+    remoteSelect.disabled = false;
+    for (const r of remotes) {
+      const opt = document.createElement('option');
+      opt.value = r.name;
+      opt.textContent = r.name;
+      if (r.name === state.gitSelectedRemote) opt.selected = true;
+      remoteSelect.appendChild(opt);
+    }
+  }
+  const netDisabled = state.gitBusy || !g.isRepo || !remotes.length;
+  $('btn-git-fetch').disabled = netDisabled;
+  $('btn-git-pull').disabled = netDisabled;
+  $('btn-git-push').disabled = netDisabled;
+  $('btn-git-commit-toggle').disabled = state.gitBusy || !g.isRepo;
+  $('btn-git-commit').disabled = state.gitBusy || !g.isRepo;
+
+  const repoBody = $('git-repo-body');
+  const emptyEl = $('git-empty-state');
+  if (!g.isRepo) {
+    setCommitComposerOpen(false);
+    $('git-summary').textContent = 'Sem repositório';
+    $('git-last-commit').classList.add('hidden');
+    $('git-staged-section').classList.add('hidden');
+    $('git-changes-section').classList.add('hidden');
+    $('git-stash-details').classList.add('hidden');
+    $('git-remotes-details').classList.add('hidden');
+    emptyEl.textContent = errorMessage || 'Esta pasta não é um repositório Git.';
+    emptyEl.classList.remove('hidden');
+    repoBody.querySelector('.git-commit-box').classList.add('hidden');
+    repoBody.querySelector('.git-filter-bar').classList.add('hidden');
+    return;
+  }
+
+  repoBody.querySelector('.git-commit-box').classList.remove('hidden');
+  repoBody.querySelector('.git-filter-bar').classList.remove('hidden');
+  $('git-stash-details').classList.remove('hidden');
+  $('git-remotes-details').classList.remove('hidden');
+
+  $('git-summary').textContent = repoCount ? `${repoCount} alter.` : 'Limpo';
+  const lastEl = $('git-last-commit');
+  if (g.lastCommit) {
+    lastEl.textContent = `Último: ${g.lastCommit.shortHash} · ${g.lastCommit.subject}`;
+    lastEl.title = `${g.lastCommit.shortHash} (${g.lastCommit.author}) ${g.lastCommit.subject}`;
+    lastEl.classList.remove('hidden');
+  } else {
+    lastEl.classList.add('hidden');
+  }
+
+  const filter = state.gitFilter.trim().toLowerCase();
+  const staged = (g.staged || []).filter((it) => !filter || it.relPath.toLowerCase().includes(filter));
+  const unstaged = (g.unstaged || []).filter((it) => !filter || it.relPath.toLowerCase().includes(filter));
+
+  $('git-staged-count').textContent = String(staged.length);
+  $('git-changes-count').textContent = String(unstaged.length);
+  $('git-staged-section').classList.toggle('hidden', staged.length === 0);
+  $('git-changes-section').classList.toggle('hidden', unstaged.length === 0);
+
+  if (!staged.length && !unstaged.length) {
+    emptyEl.textContent = filter ? 'Nenhum arquivo alterado corresponde ao filtro.' : 'Nenhuma alteração pendente.';
+    emptyEl.classList.remove('hidden');
+  } else {
+    emptyEl.classList.add('hidden');
+  }
+
+  renderGitFileList($('git-staged-list'), staged, true);
+  renderGitFileList($('git-changes-list'), unstaged, false);
+  renderGitStashAndRemotes();
+}
+
+function renderGitFileList(container, items, isStaged) {
+  const frag = document.createDocumentFragment();
+  for (const item of items) {
+    const wsRelPath = toWorkspaceRelPath(item.relPath);
     const row = document.createElement('div');
     row.className = 'git-row';
+    if (state.preview?.relPath === wsRelPath && state.previewOpen) row.classList.add('selected');
+
     const slash = item.relPath.lastIndexOf('/');
     const fileName = slash === -1 ? item.relPath : item.relPath.slice(slash + 1);
     const dirName = slash === -1 ? '' : item.relPath.slice(0, slash);
+    const extIdx = fileName.lastIndexOf('.');
+    const ext = extIdx > 0 ? fileName.slice(extIdx) : '';
 
     const icon = document.createElement('span');
     icon.className = 'tree-item-icon';
-    const extIdx = fileName.lastIndexOf('.');
-    icon.innerHTML = getEntryIconHtml({
-      type: 'file',
-      ext: extIdx > 0 ? fileName.slice(extIdx) : '',
-    });
+    icon.innerHTML = getEntryIconHtml({ type: 'file', ext });
 
     const pathWrap = document.createElement('span');
     pathWrap.className = 'git-row-path';
     pathWrap.textContent = fileName;
+    pathWrap.title = wsRelPath;
     if (dirName) {
       const dirSpan = document.createElement('span');
       dirSpan.className = 'git-row-dir';
@@ -671,31 +1014,530 @@ function renderGitTab() {
       pathWrap.appendChild(dirSpan);
     }
 
+    const actions = document.createElement('span');
+    actions.className = 'git-row-actions';
+
+    if (isStaged) {
+      const unstageBtn = makeGitActBtn('−', 'Remover do Stage (Unstage)', () => gitUnstage([item.relPath]));
+      actions.appendChild(unstageBtn);
+    } else {
+      const stageBtn = makeGitActBtn('+', 'Adicionar ao Stage', () => gitStage([item.relPath]));
+      const discardBtn = makeGitActBtn('↶', 'Descartar alterações', () => gitDiscardConfirm([item.relPath], item.untracked), true);
+      actions.append(stageBtn, discardBtn);
+    }
+    const mentionBtn = makeGitActBtn('@', 'Copiar @mention para o chat', () => copyText(`@${wsRelPath}`, '@mention'));
+    actions.appendChild(mentionBtn);
+
     const statusBadge = document.createElement('span');
     statusBadge.className = `git-badge ${item.status}`;
     statusBadge.textContent = item.status;
 
-    row.append(icon, pathWrap, statusBadge);
-    row.addEventListener('click', () => {
-      if (item.status === 'D') {
-        showToast('Arquivo removido no working tree', true);
-        return;
-      }
-      openPreview(item.relPath);
-    });
+    row.append(icon, pathWrap, actions, statusBadge);
+    row.addEventListener('click', () =>
+      openGitDiffPreview(item.relPath, { staged: isStaged, status: item.status, repo: state.activeGitRepo }),
+    );
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      openEntryContextMenu({
-        name: fileName,
-        relPath: item.relPath,
-        type: 'file',
-        ext: extIdx > 0 ? fileName.slice(extIdx) : '',
-      }, e.clientX, e.clientY);
+      openGitEntryContextMenu(item, isStaged, e.clientX, e.clientY);
     });
     frag.appendChild(row);
   }
-  list.innerHTML = '';
-  list.appendChild(frag);
+  container.innerHTML = '';
+  container.appendChild(frag);
+}
+
+function makeGitActBtn(label, title, onClick, isDanger = false) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = `git-act-btn${isDanger ? ' danger' : ''}`;
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.textContent = label;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    onClick();
+  });
+  return btn;
+}
+
+function renderGitStashAndRemotes() {
+  const stashes = state.gitStashes || [];
+  $('git-stash-count').textContent = String(state.git.stashCount ?? stashes.length);
+  const stashList = $('git-stash-list');
+  stashList.innerHTML = '';
+  if (!stashes.length) {
+    stashList.innerHTML = '<div class="empty-state" style="padding:8px">Nenhum stash salvo.</div>';
+  } else {
+    for (const s of stashes) {
+      const row = document.createElement('div');
+      row.className = 'stash-row';
+      const info = document.createElement('div');
+      info.className = 'stash-label';
+      info.innerHTML = `<span class="stash-msg">${escapeHtml(s.message || s.ref)}</span><span class="stash-ref">${escapeHtml(s.ref)}</span>`;
+
+      const popBtn = document.createElement('button');
+      popBtn.type = 'button';
+      popBtn.className = 'btn btn-ghost btn-xs';
+      popBtn.textContent = 'Pop';
+      popBtn.addEventListener('click', () => runStashOp('pop', { ref: s.ref }));
+
+      const applyBtn = document.createElement('button');
+      applyBtn.type = 'button';
+      applyBtn.className = 'btn btn-ghost btn-xs';
+      applyBtn.textContent = 'Apply';
+      applyBtn.addEventListener('click', () => runStashOp('apply', { ref: s.ref }));
+
+      const dropBtn = document.createElement('button');
+      dropBtn.type = 'button';
+      dropBtn.className = 'btn btn-ghost btn-xs';
+      dropBtn.textContent = 'Drop';
+      dropBtn.addEventListener('click', async () => {
+        const ok = await openDialog({
+          title: 'Remover Stash',
+          message: `Excluir "${s.ref}" (${s.message || 'sem mensagem'})?`,
+          confirmText: 'Excluir',
+          danger: true,
+        });
+        if (ok) await runStashOp('drop', { ref: s.ref });
+      });
+
+      row.append(info, popBtn, applyBtn, dropBtn);
+      stashList.appendChild(row);
+    }
+  }
+
+  const remotes = state.git.remotes || [];
+  $('git-remotes-count').textContent = String(remotes.length);
+  const remList = $('git-remotes-list');
+  remList.innerHTML = '';
+  if (!remotes.length) {
+    remList.innerHTML = '<div class="empty-state" style="padding:8px">Nenhum remote configurado.</div>';
+  } else {
+    for (const r of remotes) {
+      const row = document.createElement('div');
+      row.className = 'remote-row';
+      const info = document.createElement('div');
+      info.className = 'remote-info';
+      info.innerHTML = `<span class="remote-name">${escapeHtml(r.name)}</span><span class="remote-url">${escapeHtml(r.pushUrl || r.fetchUrl)}</span>`;
+      row.appendChild(info);
+      remList.appendChild(row);
+    }
+  }
+}
+
+async function gitStage(paths, all = false) {
+  if (!state.activeRoot || state.gitBusy) return;
+  setGitBusy(true, 'Adicionando ao Stage...');
+  try {
+    await apiPost('/api/git/stage', { root: state.activeRoot, repo: state.activeGitRepo, paths, all });
+    await refreshGitStatus();
+    setStatus('Stage atualizado');
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    setGitBusy(false);
+  }
+}
+
+async function gitUnstage(paths, all = false) {
+  if (!state.activeRoot || state.gitBusy) return;
+  setGitBusy(true, 'Removendo do Stage...');
+  try {
+    await apiPost('/api/git/unstage', { root: state.activeRoot, repo: state.activeGitRepo, paths, all });
+    await refreshGitStatus();
+    setStatus('Unstage concluído');
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    setGitBusy(false);
+  }
+}
+
+async function gitDiscardConfirm(paths, isUntracked = false) {
+  const targetLabel = paths.length === 1 ? paths[0] : `${paths.length} arquivos`;
+  const confirmed = await openDialog({
+    title: 'Descartar Alterações',
+    message: isUntracked
+      ? `Excluir permanentemente o arquivo não rastreado "${targetLabel}"?`
+      : `Reverter alterações locais em "${targetLabel}"? Isso não pode ser desfeito.`,
+    confirmText: 'Descartar',
+    danger: true,
+  });
+  if (!confirmed) return;
+  setGitBusy(true, 'Descartando alterações...');
+  try {
+    await apiPost('/api/git/discard', { root: state.activeRoot, repo: state.activeGitRepo, paths });
+    if (state.preview && paths.some((p) => toWorkspaceRelPath(p) === state.preview.relPath)) {
+      forceClosePreview();
+    }
+    await Promise.all([refreshGitStatus(), refreshExplorer()]);
+    showToast(`Alterações descartadas: ${targetLabel}`);
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    setGitBusy(false);
+  }
+}
+
+async function gitCommitSubmit() {
+  if (!state.activeRoot || !state.git.isRepo || state.gitBusy) return;
+  const msgEl = $('git-commit-msg');
+  const message = msgEl.value.trim();
+  if (!message) {
+    showToast('Digite uma mensagem de commit.', true);
+    msgEl.focus();
+    return;
+  }
+  if (!state.git.stagedCount) {
+    showToast('Nenhum arquivo em Stage. Clique em + ou "Stage All" antes de commitar.', true);
+    return;
+  }
+  setGitBusy(true, 'Executando commit...');
+  try {
+    const res = await apiPost('/api/git/commit', {
+      root: state.activeRoot,
+      repo: state.activeGitRepo,
+      message,
+    });
+    msgEl.value = '';
+    setCommitComposerOpen(false);
+    await refreshGitStatus();
+    const short = res.lastCommit?.shortHash ? ` (${res.lastCommit.shortHash})` : '';
+    showToast(`Commit realizado${short}`);
+    setStatus('Commit concluído');
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    setGitBusy(false);
+  }
+}
+
+async function runStashOp(action, extra = {}) {
+  if (!state.activeRoot || state.gitBusy) return;
+  setGitBusy(true, `Executando stash ${action}...`);
+  try {
+    await apiPost('/api/git/stash', { root: state.activeRoot, repo: state.activeGitRepo, action, ...extra });
+    await Promise.all([refreshGitStatus({ loadStashes: true }), refreshExplorer()]);
+    showToast(`Stash ${action} concluído`);
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    setGitBusy(false);
+  }
+}
+
+async function promptStashPush() {
+  const message = await openDialog({
+    title: 'Guardar no Stash',
+    inputLabel: 'Mensagem opcional para identificar o stash',
+    placeholder: 'Ex.: wip-ajustes-ui',
+    confirmText: 'Guardar Stash',
+  });
+  if (message === null) return;
+  await runStashOp('push', { message, includeUntracked: true });
+}
+
+async function runRemoteOp(action) {
+  if (!state.activeRoot || !state.git.isRepo || state.gitBusy) return;
+  const remote = $('git-remote-select').value || state.gitSelectedRemote || 'origin';
+  setGitBusy(true, `Git ${action} (${remote})...`);
+  try {
+    const payload = { root: state.activeRoot, repo: state.activeGitRepo, action, remote };
+    if (action === 'fetch') payload.prune = true;
+    if (action === 'push') {
+      payload.branch = state.git.branch;
+      if (!state.git.upstream) payload.setUpstream = true;
+    }
+    await apiPost('/api/git/remote', payload);
+    await refreshGitStatus();
+    showToast(`Git ${action} (${remote}) concluído`);
+    setStatus(`Git ${action} concluído`);
+  } catch (err) {
+    showToast(err.message, true);
+  } finally {
+    setGitBusy(false);
+  }
+}
+
+async function copyAllGitMentions() {
+  const seen = new Set();
+  const list = [];
+  for (const item of [...(state.git.staged || []), ...(state.git.unstaged || [])]) {
+    const wsRelPath = toWorkspaceRelPath(item.relPath);
+    if (!seen.has(wsRelPath)) {
+      seen.add(wsRelPath);
+      list.push(`@${wsRelPath}`);
+    }
+  }
+  if (!list.length) {
+    showToast('Nenhum arquivo alterado para mencionar.', true);
+    return;
+  }
+  await copyText(list.join(' '), `${list.length} @mentions copiados`);
+}
+
+async function copyFullGitDiff() {
+  if (!state.activeRoot || !state.git.isRepo) return;
+  try {
+    const [unstagedRes, stagedRes] = await Promise.all([
+      apiGet('/api/git/diff', { root: state.activeRoot, repo: state.activeGitRepo, staged: '0' }),
+      apiGet('/api/git/diff', { root: state.activeRoot, repo: state.activeGitRepo, staged: '1' }),
+    ]);
+    const parts = [stagedRes.diff, unstagedRes.diff].filter((d) => d && d.trim());
+    if (!parts.length) {
+      showToast('Sem diff textual para copiar (verifique arquivos untracked).', true);
+      return;
+    }
+    await copyText(parts.join('\n'), 'Diff copiado');
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+function openGitEntryContextMenu(item, isStaged, x, y) {
+  const menu = $('context-menu');
+  menu.innerHTML = '';
+  state.contextMenuOpen = true;
+  const wsRelPath = toWorkspaceRelPath(item.relPath);
+  const slash = wsRelPath.lastIndexOf('/');
+  const fileName = slash === -1 ? wsRelPath : wsRelPath.slice(slash + 1);
+  const fullPath = `${state.activeRoot}\\${wsRelPath.replace(/\//g, '\\')}`;
+
+  addMenuButton(menu, 'Abrir Diff', () =>
+    openGitDiffPreview(item.relPath, { staged: isStaged, status: item.status, repo: state.activeGitRepo }),
+  );
+  if (item.status !== 'D') {
+    addMenuButton(menu, 'Abrir Arquivo Completo', () => openPreview(wsRelPath));
+    addMenuButton(menu, 'Mostrar na Pasta', () => openInExternalApp(wsRelPath, 'explorer'));
+  }
+  addMenuSeparator(menu);
+  if (isStaged) {
+    addMenuButton(menu, 'Remover do Stage (Unstage)', () => gitUnstage([item.relPath]));
+  } else {
+    addMenuButton(menu, 'Adicionar ao Stage', () => gitStage([item.relPath]));
+    addMenuButton(menu, 'Descartar Alterações...', () => gitDiscardConfirm([item.relPath], item.untracked), { danger: true });
+  }
+  addMenuSeparator(menu);
+  addMenuButton(menu, 'Copiar Caminho Relativo', () => copyText(wsRelPath, 'Relativo'));
+  addMenuButton(menu, 'Copiar Caminho Absoluto', () => copyText(fullPath, 'Absoluto'));
+  addMenuButton(menu, `Copiar @mention (${fileName})`, () => copyText(`@${wsRelPath}`, '@mention'));
+  positionMenu(menu, x, y);
+}
+
+// ---------- Branch Manager Modal ----------
+async function openBranchModal() {
+  if (!state.activeRoot || !state.git.isRepo) return;
+  state.pendingBranchSwitch = '';
+  $('branch-dirty-banner').classList.add('hidden');
+  $('branch-filter').value = '';
+  $('branch-modal-backdrop').classList.remove('hidden');
+  $('git-branch-btn').setAttribute('aria-expanded', 'true');
+  await refreshBranchesList();
+}
+
+function closeBranchModal() {
+  $('branch-modal-backdrop').classList.add('hidden');
+  $('git-branch-btn').setAttribute('aria-expanded', 'false');
+  state.pendingBranchSwitch = '';
+}
+
+async function refreshBranchesList() {
+  try {
+    const data = await apiGet('/api/git/branches', { root: state.activeRoot, repo: state.activeGitRepo });
+    state.gitBranches = data;
+    renderBranchModalList();
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+function renderBranchModalList() {
+  const container = $('branch-list');
+  const filter = $('branch-filter').value.trim().toLowerCase();
+  const local = (state.gitBranches.local || []).filter((b) => !filter || b.name.toLowerCase().includes(filter));
+  const remote = (state.gitBranches.remote || []).filter((b) => !filter || b.name.toLowerCase().includes(filter));
+  container.innerHTML = '';
+
+  const addSection = (title, list, isRemote) => {
+    if (!list.length) return;
+    const hdr = document.createElement('div');
+    hdr.className = 'branch-section-title';
+    hdr.textContent = title;
+    container.appendChild(hdr);
+
+    for (const b of list) {
+      const row = document.createElement('div');
+      row.className = `branch-row${b.current ? ' is-current' : ''}`;
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'branch-row-name';
+      nameEl.textContent = b.name;
+      nameEl.title = b.subject ? `${b.sha} · ${b.subject}` : b.name;
+      row.appendChild(nameEl);
+
+      const acts = document.createElement('div');
+      acts.className = 'branch-row-actions';
+
+      if (b.current) {
+        const badge = document.createElement('span');
+        badge.className = 'pill pill-ok';
+        badge.textContent = 'Atual';
+        acts.appendChild(badge);
+      } else if (!isRemote) {
+        acts.appendChild(makeSmallBtn('Trocar', () => switchBranchAction(b.name)));
+        acts.appendChild(makeSmallBtn('Merge', () => mergeBranchAction(b.name)));
+        acts.appendChild(makeSmallBtn('Renomear', () => renameBranchAction(b.name)));
+        acts.appendChild(makeSmallBtn('Excluir', () => deleteBranchAction(b.name), true));
+      } else {
+        acts.appendChild(makeSmallBtn('Checkout', () => switchBranchAction(b.name)));
+      }
+
+      row.appendChild(acts);
+      container.appendChild(row);
+    }
+  };
+
+  addSection('Locais', local, false);
+  addSection('Remotas', remote, true);
+  if (!local.length && !remote.length) {
+    container.innerHTML = '<div class="empty-state">Nenhuma branch encontrada.</div>';
+  }
+}
+
+function makeSmallBtn(text, onClick, isDanger = false) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = `btn btn-xs ${isDanger ? 'btn-ghost' : 'btn-ghost'}`;
+  if (isDanger) btn.style.color = 'var(--pe-error)';
+  btn.textContent = text;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+async function createBranchAction(e) {
+  e.preventDefault();
+  const name = $('branch-new-name').value.trim();
+  const checkout = $('branch-checkout-new').checked;
+  if (!name) return;
+  try {
+    await apiPost('/api/git/branch', { root: state.activeRoot, repo: state.activeGitRepo, action: 'create', name, checkout });
+    $('branch-new-name').value = '';
+    $('branch-dirty-banner').classList.add('hidden');
+    await Promise.all([refreshBranchesList(), refreshGitStatus()]);
+    showToast(`Branch criada: ${name}`);
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function switchBranchAction(name) {
+  $('branch-dirty-banner').classList.add('hidden');
+  try {
+    const res = await apiPost('/api/git/branch', { root: state.activeRoot, repo: state.activeGitRepo, action: 'switch', name });
+    await Promise.all([refreshBranchesList(), refreshGitStatus(), refreshExplorer()]);
+    showToast(`Branch ativa: ${res.branch || name}`);
+  } catch (err) {
+    if (err.code === 'DIRTY_WORKTREE') {
+      state.pendingBranchSwitch = name;
+      $('branch-dirty-msg').textContent = `Há alterações locais impedindo a troca para "${name}".`;
+      $('branch-dirty-banner').classList.remove('hidden');
+      return;
+    }
+    showToast(err.message, true);
+  }
+}
+
+async function stashAndSwitchBranch() {
+  const target = state.pendingBranchSwitch;
+  if (!target) return;
+  try {
+    await apiPost('/api/git/stash', {
+      root: state.activeRoot,
+      repo: state.activeGitRepo,
+      action: 'push',
+      includeUntracked: true,
+      message: `Auto-stash antes de trocar para ${target}`,
+    });
+    $('branch-dirty-banner').classList.add('hidden');
+    state.pendingBranchSwitch = '';
+    await switchBranchAction(target);
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function renameBranchAction(oldName) {
+  const newName = await openDialog({
+    title: 'Renomear Branch',
+    inputLabel: `Novo nome para "${oldName}"`,
+    initialValue: oldName,
+    confirmText: 'Renomear',
+  });
+  if (!newName || newName.trim() === oldName) return;
+  try {
+    await apiPost('/api/git/branch', {
+      root: state.activeRoot,
+      repo: state.activeGitRepo,
+      action: 'rename',
+      oldName,
+      newName: newName.trim(),
+    });
+    await Promise.all([refreshBranchesList(), refreshGitStatus()]);
+    showToast(`Branch renomeada para ${newName.trim()}`);
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function mergeBranchAction(source) {
+  const ok = await openDialog({
+    title: 'Mesclar Branch',
+    message: `Fazer merge de "${source}" na branch atual ("${state.git.branch}")?`,
+    confirmText: 'Mesclar',
+  });
+  if (!ok) return;
+  try {
+    await apiPost('/api/git/branch', { root: state.activeRoot, repo: state.activeGitRepo, action: 'merge', source });
+    await Promise.all([refreshBranchesList(), refreshGitStatus(), refreshExplorer()]);
+    showToast(`Merge de ${source} concluído`);
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function deleteBranchAction(name) {
+  const ok = await openDialog({
+    title: 'Excluir Branch',
+    message: `Excluir a branch local "${name}"?`,
+    confirmText: 'Excluir',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await apiPost('/api/git/branch', { root: state.activeRoot, repo: state.activeGitRepo, action: 'delete', name });
+    await Promise.all([refreshBranchesList(), refreshGitStatus()]);
+    showToast(`Branch excluída: ${name}`);
+  } catch (err) {
+    if (err.code === 'UNMERGED_BRANCH' || /not fully merged/i.test(err.message)) {
+      const forceOk = await openDialog({
+        title: 'Branch não mesclada',
+        message: `"${name}" possui commits não mesclados. Forçar exclusão (-D)?`,
+        confirmText: 'Forçar Exclusão',
+        danger: true,
+      });
+      if (forceOk) {
+        try {
+          await apiPost('/api/git/branch', { root: state.activeRoot, repo: state.activeGitRepo, action: 'delete', name, force: true });
+          await Promise.all([refreshBranchesList(), refreshGitStatus()]);
+          showToast(`Branch excluída: ${name}`);
+        } catch (err2) {
+          showToast(err2.message, true);
+        }
+      }
+      return;
+    }
+    showToast(err.message, true);
+  }
 }
 
 // ---------- Search (Grep) ----------
@@ -851,8 +1693,14 @@ async function openPreview(relPath, { highlightLine = 0 } = {}) {
   if (!state.activeRoot || !relPath) return;
   try {
     const data = await apiGet('/api/preview', { root: state.activeRoot, path: relPath });
+    const gitLoc = resolveGitLocationForWorkspacePath(data.relPath || relPath);
     state.preview = data;
     state.previewOpen = true;
+    state.previewMode = 'file';
+    state.previewDiff = null;
+    state.previewDiffStaged = false;
+    state.previewGitRepo = gitLoc.repo;
+    state.previewGitRelPath = gitLoc.gitRelPath;
     state.treeHovered = false; // Auto-minimize tree immediately when selecting a file
     state.editMode = false;
     state.editDirty = false;
@@ -861,6 +1709,60 @@ async function openPreview(relPath, { highlightLine = 0 } = {}) {
     syncStageLayout();
     renderPreview();
     setStatus(`Visualizando ${data.relPath}`, formatBytes(data.size));
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function openGitDiffPreview(relPath, { staged = false, status = 'M', repo = state.activeGitRepo } = {}) {
+  if (!state.activeRoot || !relPath) return;
+  try {
+    const wsRelPath = toWorkspaceRelPath(relPath, repo);
+    const diffRes = await apiGet('/api/git/diff', {
+      root: state.activeRoot,
+      repo: repo || '',
+      path: relPath,
+      staged: staged ? '1' : '0',
+    });
+    let fileData = null;
+    if (status !== 'D') {
+      try {
+        fileData = await apiGet('/api/preview', { root: state.activeRoot, path: wsRelPath });
+      } catch (_) {
+        fileData = null;
+      }
+    }
+    if (!fileData) {
+      const name = wsRelPath.split('/').pop() || wsRelPath;
+      const dotIdx = name.lastIndexOf('.');
+      const ext = dotIdx > 0 ? name.slice(dotIdx).toLowerCase() : '';
+      fileData = {
+        relPath: wsRelPath,
+        name,
+        ext,
+        size: diffRes.totalBytes || 0,
+        kind: diffRes.isBinary ? 'binary' : 'text',
+        isBinary: Boolean(diffRes.isBinary),
+        isMarkdown: ext === '.md' || ext === '.markdown',
+        truncated: false,
+        content: '',
+      };
+    }
+    state.preview = fileData;
+    state.previewOpen = true;
+    state.previewMode = 'diff';
+    state.previewDiff = diffRes;
+    state.previewDiffStaged = Boolean(staged);
+    state.previewGitRepo = repo || '';
+    state.previewGitRelPath = relPath;
+    state.treeHovered = false;
+    state.editMode = false;
+    state.editDirty = false;
+    state.mdRendered = false;
+    state.highlightLine = 0;
+    syncStageLayout();
+    renderPreview();
+    setStatus(`Diff ${staged ? '(Staged)' : '(Changes)'}: ${wsRelPath}`, `${diffRes.totalLines || 0} linhas`);
   } catch (err) {
     showToast(err.message, true);
   }
@@ -885,9 +1787,19 @@ function closePreview(silent = false) {
 function forceClosePreview() {
   state.preview = null;
   state.previewOpen = false;
+  state.previewMode = 'file';
+  state.previewDiff = null;
+  state.previewDiffStaged = false;
+  state.previewGitRepo = '';
+  state.previewGitRelPath = '';
   state.treeHovered = false;
   state.editMode = false;
   state.editDirty = false;
+  const notice = $('preview-diff-notice');
+  if (notice) {
+    notice.classList.add('hidden');
+    notice.textContent = '';
+  }
   syncStageLayout();
   setStatus('Pronto', '');
 }
@@ -902,19 +1814,54 @@ function renderPreview() {
   $('preview-dirty-dot').classList.toggle('hidden', !state.editDirty);
   updatePreviewPrimaryExternalButton();
 
-  const canEdit = p.kind === 'text' && !p.truncated;
-  $('btn-toggle-md-mode').classList.toggle('hidden', !p.isMarkdown || state.editMode);
+  const isDiffMode = state.previewMode === 'diff';
+  const gitLoc = state.previewGitRelPath
+    ? { repo: state.previewGitRepo, gitRelPath: state.previewGitRelPath }
+    : resolveGitLocationForWorkspacePath(p.relPath);
+  const hasGitChange =
+    isDiffMode || (gitLoc.repo === state.activeGitRepo && Boolean(state.git?.files?.[gitLoc.gitRelPath]));
+  const diffBtn = $('btn-toggle-diff-mode');
+  if (diffBtn) {
+    diffBtn.classList.toggle('hidden', !hasGitChange || state.editMode);
+    diffBtn.classList.toggle('is-active', isDiffMode);
+    const diffLabel = $('btn-toggle-diff-label');
+    if (diffLabel) diffLabel.textContent = isDiffMode ? 'Arquivo' : 'Diff';
+  }
+
+  const canEdit = p.kind === 'text' && !p.truncated && !isDiffMode;
+  $('btn-toggle-md-mode').classList.toggle('hidden', !p.isMarkdown || state.editMode || isDiffMode);
   $('btn-toggle-md-label').textContent = state.mdRendered ? 'Código' : 'Preview MD';
   $('btn-edit-toggle').classList.toggle('hidden', !canEdit);
   $('btn-edit-toggle').classList.toggle('is-active', state.editMode);
   $('btn-save-file').classList.toggle('hidden', !state.editMode);
 
   const metaBar = $('preview-meta-bar');
-  const metaParts = [formatBytes(p.size)];
-  if (p.lineCount) metaParts.push(`${p.lineCount} linhas`);
-  if (p.truncated) metaParts.push('truncado (512 KB)');
-  metaBar.textContent = metaParts.join(' · ');
+  if (isDiffMode && state.previewDiff) {
+    const diffMeta = [
+      state.previewDiffStaged ? 'Diff (Staged)' : 'Diff (Changes)',
+      formatBytes(state.previewDiff.totalBytes || 0),
+    ];
+    if (state.previewDiff.totalLines) diffMeta.push(`${state.previewDiff.totalLines} linhas`);
+    if (state.previewDiff.truncated) diffMeta.push('truncado');
+    metaBar.textContent = diffMeta.join(' · ');
+  } else {
+    const metaParts = [formatBytes(p.size)];
+    if (p.lineCount) metaParts.push(`${p.lineCount} linhas`);
+    if (p.truncated) metaParts.push('truncado (512 KB)');
+    metaBar.textContent = metaParts.join(' · ');
+  }
   metaBar.classList.remove('hidden');
+
+  const diffNotice = $('preview-diff-notice');
+  if (diffNotice) {
+    if (isDiffMode && state.previewDiff?.truncated) {
+      diffNotice.textContent = `Diff truncado (${formatBytes(state.previewDiff.totalBytes || 0)}, ${state.previewDiff.totalLines || 0} linhas). Use "Copiar Diff" ou abra no app externo para ver completo.`;
+      diffNotice.classList.remove('hidden');
+    } else {
+      diffNotice.classList.add('hidden');
+      diffNotice.textContent = '';
+    }
+  }
 
   const body = $('preview-body');
   const editorWrap = $('preview-editor-wrap');
@@ -932,6 +1879,11 @@ function renderPreview() {
 
   editorWrap.classList.add('hidden');
   body.classList.remove('hidden');
+
+  if (isDiffMode) {
+    renderDiffTable(body, state.previewDiff);
+    return;
+  }
 
   if (p.kind === 'image') {
     if (p.dataUrl) {
@@ -963,6 +1915,72 @@ function renderPreview() {
   }
 
   renderCodeTable(body, p.content || '', state.highlightLine);
+}
+
+function renderDiffTable(container, diffData) {
+  container.innerHTML = '';
+  if (!diffData || diffData.isBinary) {
+    const empty = document.createElement('div');
+    empty.className = 'git-empty-state';
+    empty.textContent = diffData?.isBinary
+      ? 'Arquivo binário — diff textual indisponível.'
+      : 'Sem diferenças para exibir.';
+    container.appendChild(empty);
+    return;
+  }
+  const raw = String(diffData.diff || '');
+  if (!raw.trim()) {
+    const empty = document.createElement('div');
+    empty.className = 'git-empty-state';
+    empty.textContent = diffData.untracked
+      ? 'Arquivo novo (untracked). Clique em "Arquivo" para visualizar o conteúdo completo.'
+      : 'Nenhuma alteração textual neste escopo.';
+    container.appendChild(empty);
+    return;
+  }
+
+  const lines = raw.replace(/\r\n/g, '\n').split('\n');
+  const table = document.createElement('table');
+  table.className = 'diff-table';
+  const tbody = document.createElement('tbody');
+
+  lines.forEach((line, idx) => {
+    const tr = document.createElement('tr');
+    let cls = 'diff-line-ctx';
+    if (line.startsWith('@@')) cls = 'diff-line-hunk';
+    else if (
+      line.startsWith('diff ') ||
+      line.startsWith('index ') ||
+      line.startsWith('--- ') ||
+      line.startsWith('+++ ') ||
+      line.startsWith('new file ') ||
+      line.startsWith('deleted file ') ||
+      line.startsWith('similarity ') ||
+      line.startsWith('rename ')
+    ) {
+      cls = 'diff-line-meta';
+    } else if (line.startsWith('+')) {
+      cls = 'diff-line-add';
+    } else if (line.startsWith('-')) {
+      cls = 'diff-line-del';
+    }
+    tr.className = cls;
+
+    const ln = document.createElement('td');
+    ln.className = 'diff-ln';
+    ln.textContent = String(idx + 1);
+
+    const code = document.createElement('td');
+    code.className = 'diff-code';
+    code.textContent = line === '' ? ' ' : line;
+
+    tr.appendChild(ln);
+    tr.appendChild(code);
+    tbody.appendChild(tr);
+  });
+
+  table.appendChild(tbody);
+  container.appendChild(table);
 }
 
 function renderBinaryCard(container, p, reason) {
@@ -1677,7 +2695,7 @@ function switchTab(tabName) {
   for (const panel of document.querySelectorAll('.tab-panel')) {
     panel.classList.toggle('active', panel.id === `panel-${tabName}`);
   }
-  if (tabName === 'git') refreshGitStatus();
+  if (tabName === 'git') refreshGitStatus({ loadStashes: true });
   if (tabName === 'search') requestAnimationFrame(() => $('search-query').focus());
 }
 
@@ -1736,11 +2754,80 @@ function bindEvents() {
     await refreshExplorer();
   });
 
-  // Search & Git
+  // Search & Git v2
   $('search-form').addEventListener('submit', runSearch);
-  $('btn-refresh-git').addEventListener('click', refreshGitStatus);
+  $('btn-refresh-git').addEventListener('click', () => refreshGitStatus({ loadStashes: true }));
+  $('git-branch-btn').addEventListener('click', openBranchModal);
+  $('git-remote-select').addEventListener('change', (e) => {
+    state.gitSelectedRemote = e.target.value;
+  });
+  $('btn-git-fetch').addEventListener('click', () => runRemoteOp('fetch'));
+  $('btn-git-pull').addEventListener('click', () => runRemoteOp('pull'));
+  $('btn-git-push').addEventListener('click', () => runRemoteOp('push'));
+
+  for (const chip of document.querySelectorAll('.commit-chip')) {
+    chip.addEventListener('click', () => {
+      const prefix = chip.dataset.prefix || '';
+      const input = $('git-commit-msg');
+      const cur = input.value;
+      const stripped = cur.replace(/^(feat|fix|docs|chore):\s*/i, '');
+      input.value = prefix + stripped;
+      input.focus();
+    });
+  }
+  $('git-commit-msg').addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      gitCommitSubmit();
+    }
+  });
+  $('btn-git-commit-toggle').addEventListener('click', () => setCommitComposerOpen(!state.gitComposerOpen));
+  $('btn-git-commit-cancel').addEventListener('click', () => setCommitComposerOpen(false));
+  $('btn-git-commit').addEventListener('click', gitCommitSubmit);
+  $('btn-git-copy-mentions').addEventListener('click', copyAllGitMentions);
+  $('btn-git-copy-diff').addEventListener('click', copyFullGitDiff);
+
+  $('git-filter').addEventListener('input', (e) => {
+    state.gitFilter = e.target.value || '';
+    $('git-filter-clear').classList.toggle('hidden', !state.gitFilter);
+    renderGitTab();
+  });
+  $('git-filter-clear').addEventListener('click', () => {
+    $('git-filter').value = '';
+    state.gitFilter = '';
+    $('git-filter-clear').classList.add('hidden');
+    renderGitTab();
+  });
+  $('btn-git-stage-all').addEventListener('click', () => gitStage([], true));
+  $('btn-git-unstage-all').addEventListener('click', () => gitUnstage([], true));
+  $('btn-git-stash-push').addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    promptStashPush();
+  });
+  $('git-stash-details').addEventListener('toggle', (e) => {
+    if (e.currentTarget.open) refreshGitStashes();
+  });
 
   // Preview actions
+  $('btn-toggle-diff-mode').addEventListener('click', async () => {
+    if (!state.preview) return;
+    if (state.previewMode === 'diff') {
+      state.previewMode = 'file';
+      renderPreview();
+      return;
+    }
+    const gitLoc = state.previewGitRelPath
+      ? { repo: state.previewGitRepo, gitRelPath: state.previewGitRelPath }
+      : resolveGitLocationForWorkspacePath(state.preview.relPath);
+    const gInfo = gitLoc.repo === state.activeGitRepo ? state.git?.files?.[gitLoc.gitRelPath] : null;
+    const staged = Boolean(gInfo?.staged && !gInfo?.unstaged);
+    await openGitDiffPreview(gitLoc.gitRelPath, {
+      staged,
+      status: gInfo?.status || 'M',
+      repo: gitLoc.repo,
+    });
+  });
   $('btn-open-primary-ext').addEventListener('click', () => {
     if (!state.preview) return;
     const primary = resolvePrimaryAppForExt(state.preview.ext);
@@ -1848,6 +2935,15 @@ function bindEvents() {
     $('custom-app-args').value = '';
   });
 
+  // Branch Manager Modal
+  $('branch-modal-close').addEventListener('click', closeBranchModal);
+  $('branch-modal-backdrop').addEventListener('click', (e) => {
+    if (e.target === $('branch-modal-backdrop')) closeBranchModal();
+  });
+  $('branch-create-form').addEventListener('submit', createBranchAction);
+  $('branch-filter').addEventListener('input', () => renderBranchModalList());
+  $('btn-branch-stash-switch').addEventListener('click', stashAndSwitchBranch);
+
   // Generic Dialog Modal
   $('dialog-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -1886,10 +2982,14 @@ function bindEvents() {
         closeContextMenu();
       } else if (!$('dialog-backdrop').classList.contains('hidden')) {
         closeDialog(null);
+      } else if (!$('branch-modal-backdrop').classList.contains('hidden')) {
+        closeBranchModal();
       } else if (!$('ws-modal-backdrop').classList.contains('hidden')) {
         closeWorkspaceModal();
       } else if (!$('ext-modal-backdrop').classList.contains('hidden')) {
         closeExternalAppsModal();
+      } else if (state.activeTab === 'git' && state.gitComposerOpen) {
+        setCommitComposerOpen(false);
       } else if (state.previewOpen && !state.editMode) {
         closePreview(false);
       }

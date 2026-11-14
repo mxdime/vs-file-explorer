@@ -9,6 +9,24 @@ and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1] - 2026-11-13
+
+### Added
+- **Git Tab v2 (Source Control + Branch Manager + Multi-Remote):**
+  - Rich repository status via `git status --porcelain=v2 --branch -uall` (`branch`, `oid`, `upstream`, `ahead`/`behind`, `detached`, `lastCommit`, `remotes`, `stashCount`) preserving v1 compatibility.
+  - Complete **Stage (`+`) / Unstage (`-`) / Discard (`↶` with confirmation) / Commit (`Ctrl+Enter` + `feat:`, `fix:`, `docs:`, `chore:` chips)** workflow backed by a per-repository serialized queue (`enqueueGitOp`) preventing `.git/index.lock` races.
+  - **Branch Manager modal:** filter local/remote branches, create, switch (with one-click *"Guardar no Stash e Trocar"* recovery on dirty worktrees), rename, merge into current, and delete (blocking active branch).
+  - **Diff Preview mode** (`GET /api/git/diff`) with hunk/line coloring (`@@`, `+`, `-`), safe truncation (>150 KB / 1,500 lines), and quick `Diff` ↔ `File` toggle.
+  - **AI productivity shortcuts:** **Copiar @** (changed file mentions) and **Copiar Diff** wired into the 3-tier clipboard fallback.
+  - **Stash & Remotes sections:** *Stash Atual*, *Pop*, *Apply*, *Drop*, and multi-remote actions (`Fetch`, `Pull --ff-only`, `Push`) with explicit remote selector.
+  - Automated test suite expanded to **23 passing tests** in `test/project-explorer.test.mjs` against real temporary Git repositories, bare remotes, and multi-repo layouts in `.temp/`.
+- **Git Tab v2.1 (Multi-Repo Support + On-Demand Commit Box):**
+  - Automatic Git repository discovery (`discoverGitRepos` / `GET /api/git/repos`) across workspace root and nested folders (submodules, sub-repos, or parent project folders), showing a compact switcher (`#git-repo-switcher`) with branch and change badges when multiple repositories exist.
+  - All `/api/git*` routes accept an optional `repo` parameter strictly validated via `resolveGitRepoRoot` (`resolveInsideWorkspace`), composing workspace-relative paths for Preview/Diff and `@mention` copy on sub-repos.
+  - **On-demand Commit composer:** compact action bar by default (`Commit`, `Copiar @`, `Copiar Diff`); message textarea and prefix chips (`feat:`, `fix:`, `docs:`, `chore:`) expand only when clicking **Commit** (auto-focused) and collapse on `Cancel`, `Esc`, or successful commit.
+
+---
+
 ## [1.0.0] - 2026-11-13
 
 ### Added

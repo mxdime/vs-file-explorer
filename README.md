@@ -2,7 +2,7 @@
 
 🌐 **Idioma / Language:** **Português (BR)** · [English](README.en.md)
 
-![Versão](https://img.shields.io/badge/version-1.0.0-007ACC)
+![Versão](https://img.shields.io/badge/version-1.0.1-007ACC)
 ![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933)
 ![Antigravity](https://img.shields.io/badge/Antigravity-2.0%20AUX__PANE-22A7F0)
 ![Licença](https://img.shields.io/badge/license-MIT-blue)
@@ -62,7 +62,7 @@ Instruções detalhadas em [`portable-extension/COMO-INSTALAR.md`](portable-exte
 
 ```text
 vs-file-explorer/
-├── plugin.json                         # Manifesto do plugin Antigravity (v1.0.0)
+├── plugin.json                         # Manifesto do plugin Antigravity (v1.0.1)
 ├── README.md                           # Documentação principal
 ├── CHANGELOG.md                        # Histórico de versões (Keep a Changelog)
 ├── LICENSE                             # Licença MIT
