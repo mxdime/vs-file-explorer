@@ -19,6 +19,7 @@ import {
   writeFileContent,
 } from './lib/fs-crud.mjs';
 import {
+  addGitIgnoreRule,
   applyStash,
   commitChanges,
   createBranch,
@@ -386,6 +387,16 @@ export function createExplorerHandlers({ dataDir, spawnFn, execFileFn, clipboard
       const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
       return { ...(await commitChanges(repoRoot, data.message, { amend: parseBool(data.amend) })), repo: repoRel };
     }),
+    postGitIgnore: wrap(async (data) => {
+      const workspaceRoot = resolveActiveRoot(data.root, dataDir);
+      const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
+      if (typeof data.pattern !== 'string' || !data.pattern.trim()) {
+        throw new PathGuardError('Gitignore pattern is required', 'INVALID_GITIGNORE_PATTERN', 400);
+      }
+      const untrackPaths = Array.isArray(data.untrackPaths) ? data.untrackPaths : [];
+      const res = await addGitIgnoreRule(repoRoot, { pattern: data.pattern, untrackPaths });
+      return { ...res, repo: repoRel };
+    }),
     postGitBranch: wrap(async (data) => {
       const workspaceRoot = resolveActiveRoot(data.root, dataDir);
       const { repoRoot, repoRel } = resolveGitRepoRoot(workspaceRoot, data.repo || '');
@@ -489,6 +500,7 @@ function registerRoutes(registerPage, registerApi, options) {
   registerApi('/api/git/unstage', h.postGitUnstage, 'POST');
   registerApi('/api/git/discard', h.postGitDiscard, 'POST');
   registerApi('/api/git/commit', h.postGitCommit, 'POST');
+  registerApi('/api/git/ignore', h.postGitIgnore, 'POST');
   registerApi('/api/git/branch', h.postGitBranch, 'POST');
   registerApi('/api/git/stash', h.postGitStash, 'POST');
   registerApi('/api/git/remote', h.postGitRemote, 'POST');

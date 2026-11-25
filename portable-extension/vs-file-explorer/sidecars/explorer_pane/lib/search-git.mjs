@@ -13,6 +13,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { basename, extname, join, posix } from 'node:path';
 import { promisify } from 'node:util';
@@ -466,6 +467,101 @@ function validateRelPaths(rootReal, paths) {
   return paths
     .filter((p) => typeof p === 'string' && p.trim())
     .map((p) => resolveInsideWorkspace(rootReal, p, { allowNonExistent: true, allowRoot: false }).relPath);
+}
+
+function validateRepoRelPaths(rootReal, paths) {
+  const clean = validateRelPaths(rootReal, paths);
+  for (const rel of clean) {
+    if (rel === '.git' || rel.startsWith('.git/')) {
+      throw new PathGuardError('Protected .git path cannot be modified', 'PROTECTED_PATH', 403);
+    }
+  }
+  return clean;
+}
+
+/** Builds deduplicated .gitignore rule suggestions for a workspace-relative path. */
+export function buildGitIgnoreSuggestions(relPath, { isDir = false } = {}) {
+  if (typeof relPath !== 'string') return [];
+  const norm = relPath.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!norm || norm === '.') return [];
+
+  const suggestions = [];
+  const seen = new Set();
+  const push = (label, pattern, kind) => {
+    if (!pattern || seen.has(pattern)) return;
+    seen.add(pattern);
+    suggestions.push({ label, pattern, kind });
+  };
+
+  push(isDir ? 'Pasta exata' : 'Arquivo exato', `/${norm}${isDir ? '/' : ''}`, 'exact');
+
+  const parts = norm.split('/').filter(Boolean);
+  for (let i = parts.length - 1; i >= 1; i--) {
+    const ancestor = parts.slice(0, i).join('/');
+    push(`Pasta: ${ancestor}/`, `/${ancestor}/`, 'folder');
+  }
+
+  if (!isDir) {
+    const base = posix.basename(norm);
+    const rawExt = extname(base);
+    const ext = rawExt.startsWith('.') ? rawExt.slice(1) : rawExt;
+    if (ext) {
+      push(`Extensão (*.${ext})`, `*.${ext}`, 'ext');
+      if (parts.length > 1) {
+        const parentDir = parts.slice(0, -1).join('/');
+        push(`Extensão em ${parentDir}/`, `/${parentDir}/*.${ext}`, 'ext');
+      }
+    }
+  }
+
+  return suggestions;
+}
+
+/** Appends a .gitignore rule (if absent) and optionally untracks paths via git rm --cached. */
+export function addGitIgnoreRule(rootInput, { pattern, untrackPaths = [] } = {}) {
+  if (typeof pattern !== 'string' || /[\r\n\0]/.test(pattern)) {
+    return Promise.reject(new PathGuardError('Invalid gitignore pattern', 'INVALID_GITIGNORE_PATTERN', 400));
+  }
+  const cleanPattern = pattern.trim();
+  if (!cleanPattern || cleanPattern === '#' || /^\/?\.git\/?$/i.test(cleanPattern)) {
+    return Promise.reject(new PathGuardError('Invalid gitignore pattern', 'INVALID_GITIGNORE_PATTERN', 400));
+  }
+
+  return enqueueGitOp(rootInput, async (rootReal) => {
+    const cleanUntrackPaths = Array.isArray(untrackPaths) && untrackPaths.length
+      ? validateRepoRelPaths(rootReal, untrackPaths)
+      : [];
+
+    const gitignorePath = join(rootReal, '.gitignore');
+    const rawContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf-8') : '';
+    const eol = rawContent.includes('\r\n') ? '\r\n' : '\n';
+    const activeLines = rawContent
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'));
+    const alreadyExisted = activeLines.includes(cleanPattern);
+
+    if (!alreadyExisted) {
+      const prefix = !rawContent
+        ? ''
+        : (rawContent.endsWith('\n') ? rawContent : `${rawContent}${eol}`);
+      writeFileSync(gitignorePath, `${prefix}${cleanPattern}${eol}`, 'utf-8');
+    }
+
+    if (cleanUntrackPaths.length) {
+      await runGit(rootReal, ['rm', '-r', '--cached', '--ignore-unmatch', '--', ...cleanUntrackPaths]);
+    }
+
+    return {
+      root: rootReal,
+      gitignoreRelPath: '.gitignore',
+      pattern: cleanPattern,
+      added: !alreadyExisted,
+      alreadyExisted,
+      untracked: cleanUntrackPaths,
+      status: await getGitStatus(rootReal),
+    };
+  });
 }
 
 async function hasHeadCommit(rootReal) {

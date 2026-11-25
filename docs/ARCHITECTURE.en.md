@@ -6,7 +6,7 @@
 
 **VS File Explorer** is a UI Plugin for **Antigravity App 2.0** structured around:
 
-1. **Plugin Manifest (`plugin.json`)**: registers the `vs-file-explorer` plugin, version `1.1.0`, vector icon `assets/logo.svg`, and suggested prompts.
+1. **Plugin Manifest (`plugin.json`)**: registers the `vs-file-explorer` plugin, version `1.2.0`, vector icon `assets/logo.svg`, and suggested prompts.
 2. **Sidecar Aux Pane (`sidecars/explorer_pane/`)**:
    - `sidecar.json`: defines `SIDECAR_UI_ENTRYPOINT_AUX_PANE` and `"agent_permissions": { "allows_user_interactions": false }`.
    - `main.mjs`: HTTP server built on `sidecar_sdk` (`SidecarApp`) serving static UI assets and the local REST API.

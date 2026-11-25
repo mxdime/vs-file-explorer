@@ -554,6 +554,45 @@
     </div>
   </div>
 
+  <!-- Gitignore Assistant Modal -->
+  <div id="gitignore-modal-backdrop" class="modal-backdrop hidden" role="presentation">
+    <div id="gitignore-modal" class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="gitignore-modal-title" data-testid="gitignore-modal">
+      <header class="modal-header">
+        <h2 id="gitignore-modal-title" class="modal-title">Ignorar no .gitignore</h2>
+        <button id="gitignore-modal-close" type="button" class="icon-btn" aria-label="Fechar">×</button>
+      </header>
+      <div class="modal-body">
+        <div id="gitignore-target-meta" class="gitignore-meta"></div>
+        <div id="gitignore-chips" class="gitignore-chips" role="group" aria-label="Sugestões de regra para .gitignore"></div>
+        <form id="gitignore-form" class="gitignore-form">
+          <div class="field-group">
+            <label class="field-label" for="gitignore-pattern-input">Regra para o .gitignore</label>
+            <input
+              id="gitignore-pattern-input"
+              type="text"
+              class="text-input"
+              placeholder="Ex.: /logs/*.log"
+              autocomplete="off"
+              spellcheck="false"
+            >
+          </div>
+          <div id="gitignore-match-preview" class="gitignore-match-preview" aria-live="polite"></div>
+          <label id="gitignore-untrack-wrap" class="branch-check-row gitignore-untrack-row">
+            <input id="gitignore-untrack-chk" type="checkbox">
+            <span>Remover do rastreamento do Git mantendo no disco (<code>git rm --cached</code>)</span>
+          </label>
+          <p id="gitignore-error" class="form-error hidden"></p>
+          <div class="dialog-actions gitignore-actions">
+            <button id="gitignore-open-file-btn" type="button" class="btn btn-ghost btn-sm">Abrir .gitignore</button>
+            <span class="spacer"></span>
+            <button id="gitignore-cancel-btn" type="button" class="btn btn-ghost btn-sm">Cancelar</button>
+            <button id="gitignore-submit-btn" type="submit" class="btn btn-primary btn-sm">Adicionar Regra</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- Generic Prompt / Confirm Modal (CRUD: New File, New Folder, Rename, Delete) -->
   <div id="dialog-backdrop" class="modal-backdrop hidden" role="presentation">
     <div id="dialog-modal" class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="dialog-title" data-testid="dialog-modal">

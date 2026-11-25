@@ -37,7 +37,9 @@ import {
   createWorkspaceWatcher,
 } from '../sidecars/explorer_pane/lib/fs-watcher.mjs';
 import {
+  addGitIgnoreRule,
   applyStash,
+  buildGitIgnoreSuggestions,
   commitChanges,
   createBranch,
   deleteBranch,
@@ -622,6 +624,127 @@ describe('search-git', () => {
       (err) => err instanceof PathGuardError && err.code === 'PATH_TRAVERSAL' && err.status === 403,
     );
   });
+
+  it('builds .gitignore suggestions for root, nested, directory, and extensionless paths', () => {
+    const rootFile = buildGitIgnoreSuggestions('app.log');
+    assert.deepEqual(
+      rootFile.map((s) => s.pattern),
+      ['/app.log', '*.log'],
+    );
+    assert.deepEqual(
+      rootFile.map((s) => s.kind),
+      ['exact', 'ext'],
+    );
+
+    const nestedFile = buildGitIgnoreSuggestions('logs/2026/app.log');
+    assert.deepEqual(
+      nestedFile.map((s) => s.pattern),
+      ['/logs/2026/app.log', '/logs/2026/', '/logs/', '*.log', '/logs/2026/*.log'],
+    );
+    assert.deepEqual(
+      nestedFile.map((s) => s.kind),
+      ['exact', 'folder', 'folder', 'ext', 'ext'],
+    );
+
+    const dirSugg = buildGitIgnoreSuggestions('build/output', { isDir: true });
+    assert.deepEqual(
+      dirSugg.map((s) => s.pattern),
+      ['/build/output/', '/build/'],
+    );
+    assert.deepEqual(
+      dirSugg.map((s) => s.kind),
+      ['exact', 'folder'],
+    );
+
+    const noExt = buildGitIgnoreSuggestions('Makefile');
+    assert.deepEqual(
+      noExt.map((s) => s.pattern),
+      ['/Makefile'],
+    );
+    assert.equal(noExt[0].kind, 'exact');
+  });
+
+  it('adds and deduplicates .gitignore rules, untracks committed/modified files without deleting from disk, and guards invalid inputs', async () => {
+    const repoDir = join(testRoot, 'gitignore-unit-repo');
+    mkdirSync(join(repoDir, 'logs'), { recursive: true });
+    const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf-8', windowsHide: true });
+
+    git(repoDir, 'init', '-b', 'main');
+    git(repoDir, 'config', 'user.name', 'Ignore Bot');
+    git(repoDir, 'config', 'user.email', 'ignore@example.local');
+
+    const trackedLogPath = join(repoDir, 'logs', 'app.log');
+    writeFileSync(join(repoDir, 'README.md'), '# Repo\n', 'utf-8');
+    writeFileSync(trackedLogPath, 'initial log line\n', 'utf-8');
+    git(repoDir, 'add', 'README.md', 'logs/app.log');
+    git(repoDir, 'commit', '-m', 'init with tracked log');
+
+    // Modify committed file so it shows as M (tracked + modified)
+    writeFileSync(trackedLogPath, 'initial log line\nmodified line\n', 'utf-8');
+    let stBefore = await getGitStatus(repoDir);
+    assert.equal(stBefore.files['logs/app.log'], 'M');
+
+    // Also create a newly staged (uncommitted) file
+    const stagedTmpPath = join(repoDir, 'temp.tmp');
+    writeFileSync(stagedTmpPath, 'temp data\n', 'utf-8');
+    git(repoDir, 'add', 'temp.tmp');
+
+    // 1. Creates .gitignore and appends rule + untracks committed/modified file
+    const res1 = await addGitIgnoreRule(repoDir, {
+      pattern: '/logs/',
+      untrackPaths: ['logs/app.log'],
+    });
+    assert.equal(res1.added, true);
+    assert.equal(res1.alreadyExisted, false);
+    assert.equal(res1.gitignoreRelPath, '.gitignore');
+    assert.equal(res1.pattern, '/logs/');
+    assert.deepEqual(res1.untracked, ['logs/app.log']);
+    assert.equal(existsSync(join(repoDir, '.gitignore')), true);
+    assert.match(readFileSync(join(repoDir, '.gitignore'), 'utf-8'), /^\/logs\/\r?\n$/);
+
+    // Must be removed from Git index while still existing intact on disk
+    assert.equal(git(repoDir, 'ls-files', 'logs/app.log').trim(), '');
+    assert.equal(existsSync(trackedLogPath), true);
+    assert.equal(readFileSync(trackedLogPath, 'utf-8'), 'initial log line\nmodified line\n');
+    assert.notEqual(res1.status.files['logs/app.log'], 'M');
+    assert.notEqual(res1.status.files['logs/app.log'], 'U');
+
+    // Untracking a newly staged (never committed) file removes it completely from git status while keeping file on disk
+    const resTmp = await addGitIgnoreRule(repoDir, {
+      pattern: '*.tmp',
+      untrackPaths: ['temp.tmp'],
+    });
+    assert.equal(resTmp.added, true);
+    assert.equal(resTmp.status.files['temp.tmp'], undefined);
+    assert.equal(existsSync(stagedTmpPath), true);
+
+    // 2. Deduplicates when adding the same rule again
+    const resDup = await addGitIgnoreRule(repoDir, { pattern: '/logs/' });
+    assert.equal(resDup.added, false);
+    assert.equal(resDup.alreadyExisted, true);
+    const gitignoreLines = readFileSync(join(repoDir, '.gitignore'), 'utf-8')
+      .split(/\r?\n/)
+      .filter(Boolean);
+    assert.deepEqual(gitignoreLines, ['/logs/', '*.tmp']);
+
+    // 3. Rejects invalid patterns
+    for (const badPattern of ['', '   ', 'bad\npattern', 'bad\rpattern', '#', '.git', '/.git/']) {
+      await assert.rejects(
+        () => addGitIgnoreRule(repoDir, { pattern: badPattern }),
+        (err) => err instanceof PathGuardError && err.code === 'INVALID_GITIGNORE_PATTERN' && err.status === 400,
+      );
+    }
+
+    // 4. Rejects path traversal and protected .git path in untrackPaths
+    await assert.rejects(
+      () => addGitIgnoreRule(repoDir, { pattern: '*.bak', untrackPaths: ['../outside.txt'] }),
+      (err) => err instanceof PathGuardError && err.code === 'PATH_TRAVERSAL' && err.status === 403,
+    );
+    await assert.rejects(
+      () => addGitIgnoreRule(repoDir, { pattern: '*.bak', untrackPaths: ['.git'] }),
+      (err) => err instanceof PathGuardError && err.code === 'PROTECTED_PATH' && err.status === 403,
+    );
+  });
 });
 
 describe('main.mjs HTTP API', () => {
@@ -1003,6 +1126,96 @@ describe('main.mjs HTTP API', () => {
     const badRepo = await reqJson('POST', '/api/git/stage', { root: ws, repo: '../../Windows', all: true }, headers);
     assert.equal(badRepo.status, 403);
     assert.equal(badRepo.json.code, 'PATH_TRAVERSAL');
+  });
+
+  it('guards POST /api/git/ignore with X-Sidecar-Token and isolates .gitignore rules to target sub-repo', async () => {
+    const headers = { 'X-Sidecar-Token': token };
+    const ws = join(testRoot, 'http-ignore-multi-ws');
+    const alphaRepo = join(ws, 'alpha');
+    const betaRepo = join(ws, 'beta');
+    mkdirSync(alphaRepo, { recursive: true });
+    mkdirSync(betaRepo, { recursive: true });
+    const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf-8', windowsHide: true });
+
+    for (const [r, br, f] of [[alphaRepo, 'main', 'alpha.txt'], [betaRepo, 'main', 'beta.txt']]) {
+      git(r, 'init', '-b', br);
+      git(r, 'config', 'user.name', 'Ignore API');
+      git(r, 'config', 'user.email', 'ignore-api@example.local');
+      writeFileSync(join(r, f), 'base\n', 'utf-8');
+      git(r, 'add', f);
+      git(r, 'commit', '-m', 'init');
+    }
+
+    // Tracked file in alpha that will be ignored + untracked via API
+    const alphaLog = join(alphaRepo, 'app.log');
+    writeFileSync(alphaLog, 'log v1\n', 'utf-8');
+    git(alphaRepo, 'add', 'app.log');
+    git(alphaRepo, 'commit', '-m', 'add app.log');
+    writeFileSync(alphaLog, 'log v2\n', 'utf-8');
+
+    // Requires X-Sidecar-Token
+    const unauth = await reqJson('POST', '/api/git/ignore', {
+      root: ws,
+      repo: 'alpha',
+      pattern: '*.log',
+    });
+    assert.equal(unauth.status, 401);
+    assert.equal(unauth.json.error, 'unauthorized');
+
+    // Rejects empty pattern
+    const emptyPat = await reqJson('POST', '/api/git/ignore', {
+      root: ws,
+      repo: 'alpha',
+      pattern: '   ',
+    }, headers);
+    assert.equal(emptyPat.status, 400);
+    assert.equal(emptyPat.json.code, 'INVALID_GITIGNORE_PATTERN');
+
+    // Rejects traversal in repo
+    const badRepo = await reqJson('POST', '/api/git/ignore', {
+      root: ws,
+      repo: '../../Windows',
+      pattern: '*.log',
+    }, headers);
+    assert.equal(badRepo.status, 403);
+    assert.equal(badRepo.json.code, 'PATH_TRAVERSAL');
+
+    // Applies rule strictly to alpha sub-repo without touching parent workspace root or sibling beta
+    const ok = await reqJson('POST', '/api/git/ignore', {
+      root: ws,
+      repo: 'alpha',
+      pattern: '*.log',
+      untrackPaths: ['app.log'],
+    }, headers);
+    assert.equal(ok.status, 200);
+    assert.equal(ok.json.repo, 'alpha');
+    assert.equal(ok.json.pattern, '*.log');
+    assert.equal(ok.json.added, true);
+    assert.equal(ok.json.alreadyExisted, false);
+    assert.deepEqual(ok.json.untracked, ['app.log']);
+
+    assert.equal(existsSync(join(alphaRepo, '.gitignore')), true);
+    assert.match(readFileSync(join(alphaRepo, '.gitignore'), 'utf-8'), /^\*\.log\r?\n$/);
+    assert.equal(existsSync(join(ws, '.gitignore')), false);
+    assert.equal(existsSync(join(betaRepo, '.gitignore')), false);
+
+    // File remains on disk and is no longer tracked by alpha's Git index
+    assert.equal(existsSync(alphaLog), true);
+    assert.equal(git(alphaRepo, 'ls-files', 'app.log').trim(), '');
+  });
+
+  it('exposes Gitignore Assistant modal elements in web/index.html and actions in web/app.js', () => {
+    const webDir = join(__dirname, '..', 'sidecars', 'explorer_pane', 'web');
+    const html = readFileSync(join(webDir, 'index.html'), 'utf-8');
+    const appJs = readFileSync(join(webDir, 'app.js'), 'utf-8');
+
+    assert.match(html, /id="gitignore-modal"/);
+    assert.match(html, /id="gitignore-chips"/);
+    assert.match(html, /id="gitignore-untrack-chk"/);
+
+    assert.match(appJs, /function openGitIgnoreModal\(/);
+    assert.match(appJs, /async function quickAddGitIgnore\(/);
+    assert.match(appJs, /\/api\/git\/ignore/);
   });
 
   it('serves GET /api/fs/events for real-time filesystem change notifications', async () => {

@@ -49,6 +49,7 @@ const state = {
   gitSelectedRemote: '',
   gitBusy: false,
   pendingBranchSwitch: '',
+  gitIgnoreTarget: null,
   externalApps: { apps: [], associations: {}, customApps: [] },
   preview: null,
   previewOpen: false,
@@ -234,6 +235,7 @@ function isAnyModalOpen() {
     !$('ws-modal-backdrop').classList.contains('hidden') ||
     !$('ext-modal-backdrop').classList.contains('hidden') ||
     !$('branch-modal-backdrop').classList.contains('hidden') ||
+    !$('gitignore-modal-backdrop').classList.contains('hidden') ||
     !$('dialog-backdrop').classList.contains('hidden')
   );
 }
@@ -1155,8 +1157,18 @@ function renderGitFileList(container, items, isStaged) {
       const discardBtn = makeGitActBtn('↶', 'Descartar alterações', () => gitDiscardConfirm([item.relPath], item.untracked), true);
       actions.append(stageBtn, discardBtn);
     }
+    const ignoreBtn = makeGitActBtn('⊘', 'Adicionar ao .gitignore...', () =>
+      openGitIgnoreModal({
+        repo: state.activeGitRepo,
+        repoRelPath: item.relPath,
+        wsRelPath,
+        isDir: false,
+        status: item.status,
+        untracked: Boolean(item.untracked),
+      }),
+    );
     const mentionBtn = makeGitActBtn('@', 'Copiar @mention para o chat', () => copyText(`@${wsRelPath}`, '@mention'));
-    actions.appendChild(mentionBtn);
+    actions.append(ignoreBtn, mentionBtn);
 
     const statusBadge = document.createElement('span');
     statusBadge.className = `git-badge ${item.status}`;
@@ -1448,10 +1460,366 @@ function openGitEntryContextMenu(item, isStaged, x, y) {
     addMenuButton(menu, 'Descartar Alterações...', () => gitDiscardConfirm([item.relPath], item.untracked), { danger: true });
   }
   addMenuSeparator(menu);
+  const exactPattern = `/${String(item.relPath || '').replace(/^\/+/, '')}`;
+  const parentDir = getParentRel(item.relPath);
+  addMenuButton(menu, `Ignorar arquivo (${exactPattern})`, () =>
+    quickAddGitIgnore({
+      repo: state.activeGitRepo,
+      pattern: exactPattern,
+      untrackPaths: item.untracked ? [] : [item.relPath],
+    }),
+  );
+  if (parentDir) {
+    const parentPattern = `/${parentDir}/`;
+    addMenuButton(menu, `Ignorar pasta (${parentPattern})`, () =>
+      quickAddGitIgnore({
+        repo: state.activeGitRepo,
+        pattern: parentPattern,
+        untrackPaths: [],
+      }),
+    );
+  }
+  addMenuButton(menu, 'Personalizar no .gitignore...', () =>
+    openGitIgnoreModal({
+      repo: state.activeGitRepo,
+      repoRelPath: item.relPath,
+      wsRelPath,
+      isDir: false,
+      status: item.status,
+      untracked: Boolean(item.untracked),
+    }),
+  );
+  addMenuSeparator(menu);
   addMenuButton(menu, 'Copiar Caminho Relativo', () => copyText(wsRelPath, 'Relativo'));
   addMenuButton(menu, 'Copiar Caminho Absoluto', () => copyText(fullPath, 'Absoluto'));
   addMenuButton(menu, `Copiar @mention (${fileName})`, () => copyText(`@${wsRelPath}`, '@mention'));
   positionMenu(menu, x, y);
+}
+
+// ---------- Gitignore Assistant ----------
+function buildClientGitIgnoreSuggestions(relPath, isDir = false) {
+  const clean = String(relPath || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '');
+  if (!clean) return [];
+
+  const suggestions = [];
+  const seen = new Set();
+  const pushUnique = (label, pattern, kind) => {
+    if (!pattern || seen.has(pattern)) return;
+    seen.add(pattern);
+    suggestions.push({ label, pattern, kind });
+  };
+
+  const parts = clean.split('/').filter(Boolean);
+  const fileName = parts[parts.length - 1] || clean;
+  pushUnique(isDir ? 'Pasta exata' : 'Arquivo exato', `/${clean}${isDir ? '/' : ''}`, 'exact');
+
+  const parentParts = parts.slice(0, -1);
+  for (let i = parentParts.length; i >= 1; i -= 1) {
+    const ancestor = parentParts.slice(0, i).join('/');
+    pushUnique('Pasta ancestral', `/${ancestor}/`, 'folder');
+  }
+
+  if (!isDir) {
+    const dotIdx = fileName.lastIndexOf('.');
+    if (dotIdx > 0 && dotIdx < fileName.length - 1) {
+      const ext = fileName.slice(dotIdx);
+      if (parentParts.length > 0) {
+        pushUnique('Extensão na pasta', `/${parentParts.join('/')}/*${ext}`, 'ext');
+      }
+      pushUnique('Extensão global', `*${ext}`, 'ext');
+    }
+  }
+
+  return suggestions;
+}
+
+function globPatternToRegex(pattern) {
+  const raw = String(pattern || '').trim().replace(/\\/g, '/');
+  if (!raw || raw.startsWith('#') || raw.startsWith('!')) return null;
+
+  const dirOnly = raw.endsWith('/');
+  let body = raw.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!body) return null;
+
+  const anchored = raw.startsWith('/') || body.includes('/');
+
+  // Convert gitignore globs (** / * / ?) into regex tokens safely
+  let regexStr = '';
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch === '*') {
+      if (body[i + 1] === '*') {
+        if (body[i + 2] === '/') {
+          regexStr += '(?:.*/)?';
+          i += 2;
+        } else {
+          regexStr += '.*';
+          i += 1;
+        }
+      } else {
+        regexStr += '[^/]*';
+      }
+    } else if (ch === '?') {
+      regexStr += '[^/]';
+    } else if (/[.+^${}()|[\]\\]/.test(ch)) {
+      regexStr += `\\${ch}`;
+    } else {
+      regexStr += ch;
+    }
+  }
+
+  const prefix = anchored ? '^' : '(?:^|/)';
+  const suffix = dirOnly ? '/.*$' : '(?:/.*)?$';
+  try {
+    return new RegExp(`${prefix}${regexStr}${suffix}`);
+  } catch {
+    return null;
+  }
+}
+
+function countMatchingGitEntries(pattern, entries = state.git?.entries || []) {
+  const re = globPatternToRegex(pattern);
+  if (!re || !Array.isArray(entries) || entries.length === 0) return 0;
+
+  const seen = new Set();
+  let count = 0;
+  for (const entry of entries) {
+    const rel = String(entry?.relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!rel || seen.has(rel)) continue;
+    seen.add(rel);
+    if (re.test(rel)) count += 1;
+  }
+  return count;
+}
+
+function resolveGitIgnoreTargetForEntry(entry) {
+  if (!entry) return null;
+  const clean = String(entry.relPath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!clean || entry.name === '.git' || clean.split('/').includes('.git')) return null;
+
+  let repo = '';
+  let repoRelPath = '';
+  const repos = Array.isArray(state.gitRepos) ? state.gitRepos : [];
+
+  if (repos.length > 0) {
+    const sorted = [...repos].sort((a, b) => (b.relPath?.length || 0) - (a.relPath?.length || 0));
+    const matched = sorted.find((r) => (!r.relPath ? true : clean.startsWith(`${r.relPath}/`)));
+    if (!matched) return null;
+    repo = matched.relPath || '';
+    repoRelPath = repo ? clean.slice(repo.length + 1) : clean;
+  } else if (state.git?.isRepo) {
+    repo = state.activeGitRepo || '';
+    if (repo) {
+      if (!clean.startsWith(`${repo}/`)) return null;
+      repoRelPath = clean.slice(repo.length + 1);
+    } else {
+      repoRelPath = clean;
+    }
+  } else {
+    return null;
+  }
+
+  if (!repoRelPath) return null;
+  const gInfo = repo === state.activeGitRepo ? state.git?.files?.[repoRelPath] : null;
+  return {
+    repo,
+    repoRelPath,
+    wsRelPath: clean,
+    isDir: entry.type === 'directory',
+    status: gInfo?.status || '',
+    untracked: gInfo ? Boolean(gInfo.untracked) : false,
+  };
+}
+
+function syncGitIgnoreChipSelection() {
+  const current = $('gitignore-pattern-input').value.trim();
+  for (const chip of $('gitignore-chips').querySelectorAll('.gitignore-chip')) {
+    const active = chip.dataset.pattern === current;
+    chip.classList.toggle('active', active);
+    chip.setAttribute('aria-pressed', String(active));
+  }
+}
+
+function updateGitIgnoreMatchPreview() {
+  const previewEl = $('gitignore-match-preview');
+  const pattern = $('gitignore-pattern-input').value.trim();
+  const target = state.gitIgnoreTarget;
+  if (!previewEl) return;
+
+  if (!pattern) {
+    previewEl.textContent = 'Digite ou selecione um padrão acima.';
+    previewEl.classList.remove('has-matches');
+    return;
+  }
+
+  if (target && target.repo !== state.activeGitRepo) {
+    previewEl.textContent = `Será gravado em ${toWorkspaceRelPath('.gitignore', target.repo)}`;
+    previewEl.classList.remove('has-matches');
+    return;
+  }
+
+  const count = countMatchingGitEntries(pattern);
+  if (count > 0) {
+    previewEl.textContent = `Afeta ${count} ${count === 1 ? 'arquivo pendente' : 'arquivos pendentes'} na lista atual do Git.`;
+    previewEl.classList.add('has-matches');
+  } else {
+    previewEl.textContent = 'Nenhum arquivo pendente da lista atual corresponde a este padrão.';
+    previewEl.classList.remove('has-matches');
+  }
+}
+
+function openGitIgnoreModal({ repo = state.activeGitRepo, repoRelPath = '', wsRelPath = '', isDir = false, status = '', untracked = true } = {}) {
+  if (!state.activeRoot) return;
+  const cleanRel = String(repoRelPath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!cleanRel) return;
+
+  const targetRepo = repo || '';
+  state.gitIgnoreTarget = {
+    repo: targetRepo,
+    repoRelPath: cleanRel,
+    wsRelPath: wsRelPath || toWorkspaceRelPath(cleanRel, targetRepo),
+    isDir: Boolean(isDir),
+    status,
+    untracked: Boolean(untracked),
+  };
+
+  const metaEl = $('gitignore-target-meta');
+  metaEl.innerHTML = '';
+  const pathSpan = document.createElement('span');
+  pathSpan.className = 'gitignore-meta-path';
+  pathSpan.textContent = isDir ? `${cleanRel}/` : cleanRel;
+  metaEl.appendChild(pathSpan);
+  if ((state.gitRepos || []).length > 1 || targetRepo) {
+    const repoPill = document.createElement('span');
+    repoPill.className = 'gitignore-repo-pill';
+    repoPill.textContent = targetRepo || '(raiz)';
+    repoPill.title = 'Repositório Git de destino';
+    metaEl.appendChild(repoPill);
+  }
+
+  const suggestions = buildClientGitIgnoreSuggestions(cleanRel, Boolean(isDir));
+  const chipsEl = $('gitignore-chips');
+  chipsEl.innerHTML = '';
+  for (const item of suggestions) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'gitignore-chip';
+    chip.dataset.pattern = item.pattern;
+    chip.setAttribute('aria-pressed', 'false');
+
+    const patSpan = document.createElement('span');
+    patSpan.textContent = item.pattern;
+    const kindSpan = document.createElement('span');
+    kindSpan.className = 'gitignore-chip-kind';
+    kindSpan.textContent = item.label;
+
+    chip.append(patSpan, kindSpan);
+    chip.addEventListener('click', () => {
+      $('gitignore-pattern-input').value = item.pattern;
+      $('gitignore-error').classList.add('hidden');
+      syncGitIgnoreChipSelection();
+      updateGitIgnoreMatchPreview();
+      $('gitignore-pattern-input').focus();
+    });
+    chipsEl.appendChild(chip);
+  }
+
+  const inputEl = $('gitignore-pattern-input');
+  inputEl.value = suggestions[0]?.pattern || `/${cleanRel}${isDir ? '/' : ''}`;
+
+  const untrackChk = $('gitignore-untrack-chk');
+  const shouldPrecheckUntrack = Boolean(status && status !== 'U' && !untracked);
+  untrackChk.checked = shouldPrecheckUntrack;
+
+  $('gitignore-error').textContent = '';
+  $('gitignore-error').classList.add('hidden');
+  $('gitignore-submit-btn').disabled = false;
+
+  syncGitIgnoreChipSelection();
+  updateGitIgnoreMatchPreview();
+
+  $('gitignore-modal-backdrop').classList.remove('hidden');
+  requestAnimationFrame(() => {
+    inputEl.focus();
+    inputEl.select();
+  });
+}
+
+function closeGitIgnoreModal() {
+  $('gitignore-modal-backdrop').classList.add('hidden');
+  state.gitIgnoreTarget = null;
+}
+
+async function submitGitIgnoreRule({ repo = state.activeGitRepo, pattern, untrackPaths = [] } = {}) {
+  if (!state.activeRoot) return null;
+  const res = await apiPost('/api/git/ignore', {
+    root: state.activeRoot,
+    repo: repo || '',
+    pattern,
+    untrackPaths,
+  });
+  await refreshExplorer();
+  const untrackSuffix = Array.isArray(res.untracked) && res.untracked.length > 0
+    ? ` · ${res.untracked.length} removido(s) do índice`
+    : '';
+  if (res.alreadyExisted) {
+    showToast(`Regra "${res.pattern}" já existe no .gitignore${untrackSuffix}`);
+  } else {
+    showToast(`Regra "${res.pattern}" adicionada ao .gitignore${untrackSuffix}`);
+  }
+  return res;
+}
+
+async function quickAddGitIgnore({ repo = state.activeGitRepo, pattern, untrackPaths = [] } = {}) {
+  try {
+    await submitGitIgnoreRule({ repo, pattern, untrackPaths });
+  } catch (err) {
+    showToast(err.message, true);
+  }
+}
+
+async function handleGitIgnoreSubmit(e) {
+  e.preventDefault();
+  const target = state.gitIgnoreTarget;
+  if (!target) return;
+
+  const pattern = $('gitignore-pattern-input').value.trim();
+  const errEl = $('gitignore-error');
+  if (!pattern) {
+    errEl.textContent = 'Informe uma regra para adicionar ao .gitignore.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  if (/[\r\n\0]/.test(pattern)) {
+    errEl.textContent = 'A regra não pode conter quebras de linha.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+
+  errEl.classList.add('hidden');
+  const submitBtn = $('gitignore-submit-btn');
+  submitBtn.disabled = true;
+
+  const untrackPaths = $('gitignore-untrack-chk').checked && target.repoRelPath
+    ? [target.repoRelPath]
+    : [];
+
+  try {
+    await submitGitIgnoreRule({
+      repo: target.repo,
+      pattern,
+      untrackPaths,
+    });
+    closeGitIgnoreModal();
+  } catch (err) {
+    errEl.textContent = err.message || 'Falha ao atualizar .gitignore.';
+    errEl.classList.remove('hidden');
+  } finally {
+    submitBtn.disabled = false;
+  }
 }
 
 // ---------- Branch Manager Modal ----------
@@ -2435,6 +2803,12 @@ function openEntryContextMenu(entry, x, y) {
   addMenuButton(menu, 'Duplicar', () => duplicateEntryAction(entry));
   addMenuButton(menu, 'Excluir...', () => promptDeleteEntry(entry), { danger: true });
 
+  const gitIgnoreTarget = resolveGitIgnoreTargetForEntry(entry);
+  if (gitIgnoreTarget) {
+    addMenuSeparator(menu);
+    addMenuButton(menu, 'Ignorar no .gitignore...', () => openGitIgnoreModal(gitIgnoreTarget));
+  }
+
   addMenuSeparator(menu);
   addMenuButton(menu, 'Copiar Caminho Relativo', () => copyText(entry.relPath, 'Relativo'));
   addMenuButton(menu, 'Copiar Caminho Absoluto', () => copyText(fullPath, 'Absoluto'));
@@ -3074,6 +3448,25 @@ function bindEvents() {
   $('branch-filter').addEventListener('input', () => renderBranchModalList());
   $('btn-branch-stash-switch').addEventListener('click', stashAndSwitchBranch);
 
+  // Gitignore Assistant Modal
+  $('gitignore-modal-close').addEventListener('click', closeGitIgnoreModal);
+  $('gitignore-cancel-btn').addEventListener('click', closeGitIgnoreModal);
+  $('gitignore-modal-backdrop').addEventListener('click', (e) => {
+    if (e.target === $('gitignore-modal-backdrop')) closeGitIgnoreModal();
+  });
+  $('gitignore-pattern-input').addEventListener('input', () => {
+    $('gitignore-error').classList.add('hidden');
+    syncGitIgnoreChipSelection();
+    updateGitIgnoreMatchPreview();
+  });
+  $('gitignore-open-file-btn').addEventListener('click', async () => {
+    const repo = state.gitIgnoreTarget?.repo || '';
+    const gitignoreWsRel = toWorkspaceRelPath('.gitignore', repo);
+    closeGitIgnoreModal();
+    await openPreview(gitignoreWsRel);
+  });
+  $('gitignore-form').addEventListener('submit', handleGitIgnoreSubmit);
+
   // Generic Dialog Modal
   $('dialog-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -3112,6 +3505,8 @@ function bindEvents() {
         closeContextMenu();
       } else if (!$('dialog-backdrop').classList.contains('hidden')) {
         closeDialog(null);
+      } else if (!$('gitignore-modal-backdrop').classList.contains('hidden')) {
+        closeGitIgnoreModal();
       } else if (!$('branch-modal-backdrop').classList.contains('hidden')) {
         closeBranchModal();
       } else if (!$('ws-modal-backdrop').classList.contains('hidden')) {

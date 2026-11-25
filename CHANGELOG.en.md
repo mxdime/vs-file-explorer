@@ -9,6 +9,15 @@ and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-11-25
+
+### Added
+- **Quick `.gitignore` Assistant (`POST /api/git/ignore`):**
+  - **1-click** shortcuts in the Git tab context menu (*Ignorar arquivo* and *Ignorar pasta pai*).
+  - `⊘` action button on Git rows and *Personalizar no `.gitignore`...* (Git tab & Explorer tree) opening `#gitignore-modal` with clickable chips for exact path, ancestor folders (`/a/b/`, `/a/`), and extensions (`*.ext`).
+  - Live match preview against current Git entries, automatic `.gitignore` rule deduplication, Multi-Repo isolation, and `git rm -r --cached --ignore-unmatch` checkbox (untracks without deleting from disk).
+- **Tests:** Expanded test suite to 31 passing tests across 6 suites.
+
 ## [1.1.0] - 2026-11-14
 
 ### Added

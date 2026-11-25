@@ -1415,6 +1415,125 @@ button {
   flex: none;
 }
 
+/* Gitignore Assistant Modal */
+.gitignore-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--pe-border);
+  border-radius: var(--r-sm);
+  background: var(--pe-bg);
+  font-size: 11.5px;
+  color: var(--pe-fg-2);
+}
+
+.gitignore-meta-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--pe-mono);
+  word-break: break-all;
+}
+
+.gitignore-repo-pill {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--pe-border);
+  border-radius: var(--r-xs);
+  background: var(--pe-elevated);
+  color: var(--pe-fg-2);
+  font-family: var(--pe-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.gitignore-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.gitignore-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--pe-border);
+  border-radius: var(--r-sm);
+  background: var(--pe-bg);
+  color: var(--pe-fg-2);
+  font-family: var(--pe-mono);
+  font-size: 11px;
+  text-align: left;
+  word-break: break-all;
+}
+
+.gitignore-chip:hover {
+  border-color: var(--pe-primary);
+  background: var(--pe-hover);
+  color: var(--pe-fg);
+}
+
+.gitignore-chip.active {
+  border-color: var(--pe-primary);
+  background: var(--pe-active);
+  color: var(--pe-primary);
+  font-weight: 600;
+}
+
+.gitignore-chip-kind {
+  flex: none;
+  font-family: var(--pe-font);
+  font-size: 10px;
+  color: var(--pe-fg-muted);
+}
+
+.gitignore-chip.active .gitignore-chip-kind {
+  color: var(--pe-primary);
+}
+
+.gitignore-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gitignore-match-preview {
+  min-height: 16px;
+  font-size: 11.5px;
+  color: var(--pe-fg-muted);
+}
+
+.gitignore-match-preview.has-matches {
+  color: var(--pe-git-m);
+  font-weight: 500;
+}
+
+.gitignore-untrack-row {
+  align-items: flex-start;
+  line-height: 1.35;
+}
+
+.gitignore-untrack-row input {
+  margin-top: 2px;
+  flex: none;
+}
+
+.gitignore-untrack-row code {
+  font-family: var(--pe-mono);
+  font-size: 11px;
+  padding: 0 3px;
+  border-radius: var(--r-xs);
+  background: var(--pe-elevated);
+}
+
+.gitignore-actions {
+  align-items: center;
+  margin-top: 4px;
+}
+
 /* Preview Diff Mode */
 .preview-diff-notice {
   padding: 5px 10px;
